@@ -166,11 +166,12 @@ fn afe_worker(afe_handle: Arc<AFE>, tx: EventTx) -> anyhow::Result<()> {
         if !last_mic_state && is_mic_on {
             log::info!("Mic turned on");
         }
-        last_mic_state = is_mic_on;
 
         if is_mic_on {
             tx.blocking_send(crate::app::Event::MicAudioChunk(result.data))
                 .map_err(|_| anyhow::anyhow!("Failed to send data"))?;
+
+            last_mic_state = is_mic_on;
             continue;
         }
 
@@ -179,6 +180,7 @@ fn afe_worker(afe_handle: Arc<AFE>, tx: EventTx) -> anyhow::Result<()> {
             tx.blocking_send(crate::app::Event::MicAudioChunkEnd)
                 .map_err(|_| anyhow::anyhow!("Failed to send data"))?;
         }
+        last_mic_state = is_mic_on;
     }
 }
 

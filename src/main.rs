@@ -9,6 +9,7 @@ mod bt_keyboard;
 mod crab_img;
 mod i2c;
 mod lcd;
+mod protocol;
 mod wifi;
 mod ws;
 
@@ -52,7 +53,7 @@ fn main() -> anyhow::Result<()> {
         lcd::DEFAULT_BACKGROUND,
         std::time::Duration::from_secs(2),
     )?;
-    lcd::display_text(&mut target, "VibeKeys Ready")?;
+    lcd::display_text(&mut target, "VibeKeys Ready", 0)?;
 
     let mut wifi = esp_idf_svc::wifi::EspWifi::new(peripherals.modem, sysloop.clone(), None)?;
     let ssid = std::env!("SSID");
@@ -76,6 +77,7 @@ fn main() -> anyhow::Result<()> {
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
     );
 
+    let audio_tx = tx.clone();
     let r = std::thread::Builder::new()
         .stack_size(AUDIO_STACK_SIZE)
         .spawn(move || {
@@ -83,7 +85,7 @@ fn main() -> anyhow::Result<()> {
                 "Starting audio worker thread in core {:?}",
                 esp_idf_svc::hal::cpu::core()
             );
-            let r = worker.run(tx);
+            let r = worker.run(audio_tx);
             if let Err(e) = r {
                 log::error!("Audio worker error: {:?}", e);
             }
@@ -94,26 +96,175 @@ fn main() -> anyhow::Result<()> {
         .enable_all()
         .build()
         .unwrap();
+    {
+        let mut btn6 = esp_idf_svc::hal::gpio::PinDriver::input(peripherals.pins.gpio6)?;
+        btn6.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
+        btn6.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::AnyEdge)?;
 
-    let mut btn6 = esp_idf_svc::hal::gpio::PinDriver::input(peripherals.pins.gpio6)?;
-    btn6.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
-    btn6.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::AnyEdge)?;
+        runtime.spawn(async move {
+            loop {
+                if let Err(e) = btn6.wait_for_falling_edge().await {
+                    log::error!("Button interrupt error: {:?}", e);
+                    continue;
+                }
 
-    runtime.spawn(async move {
-        loop {
-            if let Err(e) = btn6.wait_for_falling_edge().await {
-                log::error!("Button interrupt error: {:?}", e);
-                continue;
+                let r = audio::MIC_ON.fetch_not(std::sync::atomic::Ordering::Relaxed);
+                log::info!("Button pressed, mic state changed to: {}", !r);
+
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             }
+        });
 
-            let r = audio::MIC_ON.fetch_not(std::sync::atomic::Ordering::Relaxed);
-            log::info!("Button pressed, mic state changed to: {}", !r);
+        let mut btn0 = esp_idf_svc::hal::gpio::PinDriver::input(peripherals.pins.gpio0)?;
+        btn0.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
+        btn0.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::AnyEdge)?;
 
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        }
-    });
+        let tx_ = tx.clone();
+        runtime.spawn(async move {
+            loop {
+                if let Err(e) = btn0.wait_for_falling_edge().await {
+                    log::error!("Button interrupt error: {:?}", e);
+                    continue;
+                }
 
-    let app_fut = app::run(format!("ws://192.168.1.28:8080/ws/{}", dev_id), rx);
+                log::info!("Button 0 pressed");
+                if let Err(e) = tx_.send(app::Event::K0).await {
+                    log::error!("Failed to send K0 event: {:?}", e);
+                    break;
+                }
+
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        });
+
+        let mut btn2 = esp_idf_svc::hal::gpio::PinDriver::input(peripherals.pins.gpio2)?;
+        btn2.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
+        btn2.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::AnyEdge)?;
+
+        let tx_ = tx.clone();
+        runtime.spawn(async move {
+            loop {
+                if let Err(e) = btn2.wait_for_falling_edge().await {
+                    log::error!("Button interrupt error: {:?}", e);
+                    continue;
+                }
+
+                log::info!("Button 2 pressed");
+                if let Err(e) = tx_.send(app::Event::Swap).await {
+                    log::error!("Failed to send Swap event: {:?}", e);
+                    break;
+                }
+
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        });
+
+        let mut btn3 = esp_idf_svc::hal::gpio::PinDriver::input(peripherals.pins.gpio3)?;
+        btn3.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
+        btn3.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::AnyEdge)?;
+
+        let tx_ = tx.clone();
+        runtime.spawn(async move {
+            loop {
+                if let Err(e) = btn3.wait_for_falling_edge().await {
+                    log::error!("Button interrupt error: {:?}", e);
+                    continue;
+                }
+
+                log::info!("Button 3 pressed");
+                if let Err(e) = tx_.send(app::Event::Esc).await {
+                    log::error!("Failed to send Esc event: {:?}", e);
+                    break;
+                }
+
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        });
+
+        let mut btn7 = esp_idf_svc::hal::gpio::PinDriver::input(peripherals.pins.gpio7)?;
+        btn7.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
+        btn7.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::AnyEdge)?;
+
+        let tx_ = tx.clone();
+        runtime.spawn(async move {
+            loop {
+                if let Err(e) = btn7.wait_for_falling_edge().await {
+                    log::error!("Button interrupt error: {:?}", e);
+                    continue;
+                }
+
+                log::info!("Button 7 pressed");
+                if let Err(e) = tx_.send(app::Event::Accept).await {
+                    log::error!("Failed to send K7 event: {:?}", e);
+                    break;
+                }
+
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        });
+
+        let mut pin16 = esp_idf_svc::hal::gpio::PinDriver::input(peripherals.pins.gpio16)?;
+        let mut pin17 = esp_idf_svc::hal::gpio::PinDriver::input(peripherals.pins.gpio17)?;
+        pin16.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
+        pin17.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
+        pin16.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::AnyEdge)?;
+        // pin17.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::NegEdge)?;
+
+        let tx_ = tx.clone();
+        runtime.spawn(async move {
+            loop {
+                if let Err(e) = pin16.wait_for_any_edge().await {
+                    log::error!("Button interrupt error: {:?}", e);
+                    continue;
+                }
+
+                if let Err(e) = if pin16.is_high() {
+                    if pin17.is_low() {
+                        tx_.send(app::Event::RotateDown)
+                    } else {
+                        tx_.send(app::Event::RotateUp)
+                    }
+                } else {
+                    if pin17.is_low() {
+                        tx_.send(app::Event::RotateUp)
+                    } else {
+                        tx_.send(app::Event::RotateDown)
+                    }
+                }
+                .await
+                {
+                    log::error!("Failed to send rotate event: {:?}", e);
+                    break;
+                }
+            }
+        });
+
+        let mut pin18 = esp_idf_svc::hal::gpio::PinDriver::input(peripherals.pins.gpio18)?;
+        pin18.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
+        pin18.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::AnyEdge)?;
+
+        let tx_ = tx.clone();
+        runtime.spawn(async move {
+            loop {
+                if let Err(e) = pin18.wait_for_falling_edge().await {
+                    log::error!("Button interrupt error: {:?}", e);
+                    continue;
+                }
+
+                log::info!("Button RotatePush pressed");
+                if let Err(e) = tx_.send(app::Event::RotatePush).await {
+                    log::error!("Failed to send RotatePush event: {:?}", e);
+                    break;
+                }
+
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        });
+    }
+
+    let mut ui = lcd::UI::new_with_target(target);
+
+    let app_fut = app::run(format!("ws://192.168.1.28:3000/ws"), &mut ui, rx);
     let r = runtime.block_on(app_fut);
     if let Err(e) = r {
         log::error!("App error: {:?}", e);
