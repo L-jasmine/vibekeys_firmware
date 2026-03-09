@@ -38,6 +38,10 @@ pub enum ClientMessage {
         /// 选项索引（choices 数组的索引）
         index: i32,
     },
+
+    /// 切换工作目录
+    #[serde(rename = "change_dir")]
+    ChangeDir(String),
 }
 
 impl Debug for ClientMessage {
@@ -60,6 +64,7 @@ impl Debug for ClientMessage {
             ClientMessage::Choice { index } => {
                 f.debug_struct("Choice").field("index", index).finish()
             }
+            ClientMessage::ChangeDir(path) => f.debug_tuple("ChangeDir").field(path).finish(),
         }
     }
 }
