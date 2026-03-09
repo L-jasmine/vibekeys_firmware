@@ -1,8 +1,7 @@
-use std::collections::LinkedList;
 use std::sync::Arc;
 
 use esp_idf_svc::hal::gpio::AnyIOPin;
-use esp_idf_svc::hal::i2s::{config, I2sDriver, I2S0, I2S1};
+use esp_idf_svc::hal::i2s::{config, I2sDriver, I2S0};
 
 use esp_idf_svc::sys::esp_sr;
 
@@ -73,7 +72,6 @@ unsafe impl Sync for AFE {}
 
 struct AFEResult {
     data: Vec<i16>,
-    speech: bool,
 }
 
 impl AFE {
@@ -129,7 +127,6 @@ impl AFE {
             }
 
             let data_size = result.data_size;
-            let speech = result.vad_state == esp_sr::vad_state_t_VAD_SPEECH;
 
             let mut data = Vec::with_capacity((data_size) as usize / 2);
             if data_size > 0 {
@@ -137,7 +134,7 @@ impl AFE {
                 data.extend_from_slice(data_);
             }
 
-            Ok(AFEResult { data, speech })
+            Ok(AFEResult { data })
         }
     }
 }
@@ -183,9 +180,6 @@ fn afe_worker(afe_handle: Arc<AFE>, tx: EventTx) -> anyhow::Result<()> {
         last_mic_state = is_mic_on;
     }
 }
-
-const CHUNK_SIZE: usize = 256;
-// const CHUNK_SIZE: usize = 512;
 
 fn audio_task_run(
     fn_read: &mut dyn FnMut(&mut [i16]) -> Result<usize, esp_idf_svc::sys::EspError>,
