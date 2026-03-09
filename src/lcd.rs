@@ -616,10 +616,7 @@ impl UI {
             UiMessage::GetInput { prompt } => self.start_input(&prompt),
             UiMessage::Choices { title, options, id } => self.show_choices(&id, &title, &options),
             UiMessage::AsrResult(text) => self.show_asr_result(&text),
-            UiMessage::Status(status) => {
-                self.status_bar = status;
-                Ok(())
-            }
+            UiMessage::Status(status) => self.set_status(&status),
         }
     }
 
@@ -792,10 +789,16 @@ impl UI {
             self.draw_text("● Recording", Point::new(0, 0), mic_color, true)?;
             10
         } else {
-            2
+            let mic_color = ColorFormat::new(50, 255, 50); // 绿色表示空闲
+            let bounding_box = self.display.bounding_box();
+            let top_bar = Rectangle::new(Point::new(0, 0), Size::new(bounding_box.size.width, 10));
+            top_bar.draw_styled(&PrimitiveStyle::with_fill(mic_color), &mut self.display)?;
+            let status_bar_str = self.status_bar.clone();
+            self.draw_text(&status_bar_str, Point::new(0, 0), mic_color, false)?;
+            10
         };
 
-        // 使用 ANSI 代码标记光标位置，prompt 用灰色背景
+        // 使用 ANSI 代码标记光标位置, prompt 用灰色背景
         let display_text = if current_input.is_empty() {
             // 空输入时显示光标标记
             format!("\x1b[48;5;240m{}\x1b[49m\x1b[44m_\x1b[49m", prompt) // prompt 灰色背景，光标蓝色背景
@@ -923,6 +926,14 @@ impl UI {
                 *cursor_pos += 1;
             }
             *current_input = chars.into_iter().collect();
+            self.refresh_input_display()?;
+        }
+        Ok(())
+    }
+
+    pub fn insert_text_at_start(&mut self, text: &str) -> anyhow::Result<()> {
+        if let UiState::WaitingInput { current_input, .. } = &mut self.state {
+            *current_input = format!("{}{}", text, current_input);
             self.refresh_input_display()?;
         }
         Ok(())
@@ -1179,6 +1190,14 @@ impl UI {
     /// 获取当前状态
     pub fn state(&self) -> &UiState {
         &self.state
+    }
+
+    pub fn set_status(&mut self, status: &str) -> anyhow::Result<()> {
+        self.status_bar = status.to_string();
+        match &self.state {
+            UiState::WaitingInput { .. } => self.refresh_input_display(),
+            _ => Ok(()),
+        }
     }
 
     fn take_waiting_input_prompt(&mut self) -> String {

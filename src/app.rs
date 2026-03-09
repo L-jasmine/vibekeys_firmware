@@ -5,6 +5,7 @@ use crate::{
     protocol::{self},
 };
 
+#[derive(Clone)]
 pub enum Event {
     MicAudioChunk(Vec<i16>),
     MicAudioChunkEnd,
@@ -13,8 +14,10 @@ pub enum Event {
     RotateUp,
     RotateDown,
     RotatePush,
-    Swap,
-    K0,
+    Backspace,
+    UltraThink,
+    SwtchMode,
+    GUI,
 }
 
 impl std::fmt::Debug for Event {
@@ -27,8 +30,10 @@ impl std::fmt::Debug for Event {
             Event::RotateUp => write!(f, "RotateUp"),
             Event::RotateDown => write!(f, "RotateDown"),
             Event::RotatePush => write!(f, "RotatePush"),
-            Event::Swap => write!(f, "Swap"),
-            Event::K0 => write!(f, "K0"),
+            Event::Backspace => write!(f, "Backspace"),
+            Event::UltraThink => write!(f, "UltraThink"),
+            Event::SwtchMode => write!(f, "SwtchMode"),
+            Event::GUI => write!(f, "GUI"),
         }
     }
 }
@@ -139,9 +144,6 @@ impl lcd::UI {
         server: &mut crate::ws::Server,
     ) -> anyhow::Result<()> {
         match evt {
-            Event::K0 => {
-                self.remove_input_char()?;
-            }
             Event::Esc => {
                 self.clear_input()?;
             }
@@ -151,7 +153,7 @@ impl lcd::UI {
             Event::RotateUp => {
                 self.move_cursor_left()?;
             }
-            Event::Swap => {
+            Event::Backspace => {
                 self.remove_input_char()?;
             }
             Event::Accept => {
@@ -162,6 +164,15 @@ impl lcd::UI {
                 }
                 log::info!("Submitting input: {}", input);
                 server.send(protocol::ClientMessage::input(input)).await?;
+            }
+            Event::UltraThink => {
+                self.insert_text_at_start("UltraThink ")?;
+            }
+            Event::SwtchMode => {
+                // shift + tab
+                server
+                    .send(protocol::ClientMessage::PtyInput(b"\x1b[Z".to_vec()))
+                    .await?;
             }
             _ => {
                 log::warn!("Unexpected event in WaitingInput state");
@@ -186,7 +197,7 @@ impl lcd::UI {
             Event::RotatePush => {
                 self.reset_scroll()?;
             }
-            Event::K0 => self.next_choice()?,
+            Event::GUI => self.next_choice()?,
             Event::Accept => {
                 if self.is_confirm_dialog() {
                     server
@@ -237,5 +248,95 @@ impl lcd::UI {
         }
 
         Ok(())
+    }
+}
+
+pub mod key_task {
+
+    pub async fn esc_key(btn: crate::AnyBtn, tx: crate::audio::EventTx) -> anyhow::Result<()> {
+        listen_key_event(btn, tx, super::Event::Esc).await
+    }
+
+    pub async fn accept_key(btn: crate::AnyBtn, tx: crate::audio::EventTx) -> anyhow::Result<()> {
+        listen_key_event(btn, tx, super::Event::Accept).await
+    }
+
+    pub async fn rotate_key(
+        mut btn_a: crate::AnyBtn,
+        btn_b: crate::AnyBtn,
+        tx: crate::audio::EventTx,
+    ) -> anyhow::Result<()> {
+        loop {
+            if let Err(_) = btn_a.wait_for_any_edge().await {
+                return Err(anyhow::anyhow!("Failed to wait for button edge"));
+            }
+
+            if let Err(_) = if btn_a.is_high() {
+                if btn_b.is_low() {
+                    tx.send(super::Event::RotateDown)
+                } else {
+                    tx.send(super::Event::RotateUp)
+                }
+            } else {
+                if btn_b.is_low() {
+                    tx.send(super::Event::RotateUp)
+                } else {
+                    tx.send(super::Event::RotateDown)
+                }
+            }
+            .await
+            {
+                return Err(anyhow::anyhow!("Failed to send rotate event"));
+            }
+        }
+    }
+
+    pub async fn rotate_push_key(
+        btn: crate::AnyBtn,
+        tx: crate::audio::EventTx,
+    ) -> anyhow::Result<()> {
+        listen_key_event(btn, tx, super::Event::RotatePush).await
+    }
+
+    pub async fn mic_key(mut btn: crate::AnyBtn) -> anyhow::Result<()> {
+        loop {
+            if let Err(e) = btn.wait_for_falling_edge().await {
+                log::error!("Button interrupt error: {:?}", e);
+                return Err(anyhow::anyhow!("Failed to wait for mic button edge"));
+            }
+
+            let r = crate::audio::MIC_ON.fetch_not(std::sync::atomic::Ordering::Relaxed);
+            log::info!("Button pressed, mic state changed to: {}", !r);
+
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
+    pub async fn backspace_key(
+        btn: crate::AnyBtn,
+        tx: crate::audio::EventTx,
+    ) -> anyhow::Result<()> {
+        listen_key_event(btn, tx, super::Event::Backspace).await
+    }
+
+    pub async fn listen_key_event(
+        mut btn: crate::AnyBtn,
+        tx: crate::audio::EventTx,
+        event: super::Event,
+    ) -> anyhow::Result<()> {
+        let port = btn.pin();
+        loop {
+            if let Err(e) = btn.wait_for_falling_edge().await {
+                log::error!("Button interrupt error: {:?}", e);
+                return Err(anyhow::anyhow!("Failed to wait for button K{port} edge"));
+            }
+
+            log::info!("Button K{port} pressed");
+            if let Err(_) = tx.send(event.clone()).await {
+                return Err(anyhow::anyhow!("Failed to send K{port} event"));
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
     }
 }

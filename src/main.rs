@@ -1,4 +1,5 @@
 use embedded_graphics::prelude::RgbColor;
+use esp_idf_svc::hal::gpio::{AnyIOPin, PinDriver};
 
 use crate::lcd::DisplayTargetDrive;
 
@@ -13,6 +14,19 @@ mod protocol;
 mod wifi;
 mod ws;
 
+type AnyBtn = PinDriver<'static, esp_idf_svc::hal::gpio::AnyIOPin, esp_idf_svc::hal::gpio::Input>;
+
+fn new_btn(
+    pin: AnyIOPin,
+    pull: esp_idf_svc::hal::gpio::Pull,
+    interrupt: esp_idf_svc::hal::gpio::InterruptType,
+) -> anyhow::Result<AnyBtn> {
+    let mut btn = PinDriver::input(pin)?;
+    btn.set_pull(pull)?;
+    btn.set_interrupt_type(interrupt)?;
+    Ok(btn)
+}
+
 fn main() -> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
@@ -26,6 +40,12 @@ fn main() -> anyhow::Result<()> {
 
     // let mut backlight = lcd::backlight_init(peripherals.pins.gpio11.into())?;
     // lcd::set_backlight(&mut backlight, 40).unwrap();
+
+    let mut btn0 = new_btn(
+        peripherals.pins.gpio0.into(),
+        esp_idf_svc::hal::gpio::Pull::Up,
+        esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+    )?;
 
     log_heap();
 
@@ -97,169 +117,87 @@ fn main() -> anyhow::Result<()> {
         .build()
         .unwrap();
     {
-        let mut btn6 = esp_idf_svc::hal::gpio::PinDriver::input(peripherals.pins.gpio6)?;
-        btn6.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
-        btn6.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::AnyEdge)?;
+        runtime.spawn(app::key_task::mic_key(btn0));
 
-        runtime.spawn(async move {
-            loop {
-                if let Err(e) = btn6.wait_for_falling_edge().await {
-                    log::error!("Button interrupt error: {:?}", e);
-                    continue;
-                }
+        let btn2 = new_btn(
+            peripherals.pins.gpio2.into(),
+            esp_idf_svc::hal::gpio::Pull::Up,
+            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+        )?;
 
-                let r = audio::MIC_ON.fetch_not(std::sync::atomic::Ordering::Relaxed);
-                log::info!("Button pressed, mic state changed to: {}", !r);
+        runtime.spawn(app::key_task::listen_key_event(
+            btn2,
+            tx.clone(),
+            app::Event::UltraThink,
+        ));
 
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            }
-        });
+        let btn4 = new_btn(
+            peripherals.pins.gpio4.into(),
+            esp_idf_svc::hal::gpio::Pull::Up,
+            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+        )?;
 
-        let mut btn0 = esp_idf_svc::hal::gpio::PinDriver::input(peripherals.pins.gpio0)?;
-        btn0.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
-        btn0.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::AnyEdge)?;
+        runtime.spawn(app::key_task::listen_key_event(
+            btn4,
+            tx.clone(),
+            app::Event::GUI,
+        ));
 
-        let tx_ = tx.clone();
-        runtime.spawn(async move {
-            loop {
-                if let Err(e) = btn0.wait_for_falling_edge().await {
-                    log::error!("Button interrupt error: {:?}", e);
-                    continue;
-                }
+        let btn5 = new_btn(
+            peripherals.pins.gpio5.into(),
+            esp_idf_svc::hal::gpio::Pull::Up,
+            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+        )?;
 
-                log::info!("Button 0 pressed");
-                if let Err(e) = tx_.send(app::Event::K0).await {
-                    log::error!("Failed to send K0 event: {:?}", e);
-                    break;
-                }
+        runtime.spawn(app::key_task::listen_key_event(
+            btn5,
+            tx.clone(),
+            app::Event::SwtchMode,
+        ));
 
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            }
-        });
+        let btn6 = new_btn(
+            peripherals.pins.gpio6.into(),
+            esp_idf_svc::hal::gpio::Pull::Up,
+            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+        )?;
+        runtime.spawn(app::key_task::backspace_key(btn6, tx.clone()));
 
-        let mut btn2 = esp_idf_svc::hal::gpio::PinDriver::input(peripherals.pins.gpio2)?;
-        btn2.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
-        btn2.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::AnyEdge)?;
+        let btn3 = new_btn(
+            peripherals.pins.gpio3.into(),
+            esp_idf_svc::hal::gpio::Pull::Up,
+            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+        )?;
 
-        let tx_ = tx.clone();
-        runtime.spawn(async move {
-            loop {
-                if let Err(e) = btn2.wait_for_falling_edge().await {
-                    log::error!("Button interrupt error: {:?}", e);
-                    continue;
-                }
+        runtime.spawn(app::key_task::esc_key(btn3, tx.clone()));
 
-                log::info!("Button 2 pressed");
-                if let Err(e) = tx_.send(app::Event::Swap).await {
-                    log::error!("Failed to send Swap event: {:?}", e);
-                    break;
-                }
+        let btn7 = new_btn(
+            peripherals.pins.gpio7.into(),
+            esp_idf_svc::hal::gpio::Pull::Up,
+            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+        )?;
 
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            }
-        });
+        runtime.spawn(app::key_task::accept_key(btn7, tx.clone()));
 
-        let mut btn3 = esp_idf_svc::hal::gpio::PinDriver::input(peripherals.pins.gpio3)?;
-        btn3.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
-        btn3.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::AnyEdge)?;
+        let pin16 = new_btn(
+            peripherals.pins.gpio16.into(),
+            esp_idf_svc::hal::gpio::Pull::Up,
+            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+        )?;
+        let pin17 = new_btn(
+            peripherals.pins.gpio17.into(),
+            esp_idf_svc::hal::gpio::Pull::Up,
+            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+        )?;
 
-        let tx_ = tx.clone();
-        runtime.spawn(async move {
-            loop {
-                if let Err(e) = btn3.wait_for_falling_edge().await {
-                    log::error!("Button interrupt error: {:?}", e);
-                    continue;
-                }
+        runtime.spawn(app::key_task::rotate_key(pin16, pin17, tx.clone()));
 
-                log::info!("Button 3 pressed");
-                if let Err(e) = tx_.send(app::Event::Esc).await {
-                    log::error!("Failed to send Esc event: {:?}", e);
-                    break;
-                }
+        let pin18 = new_btn(
+            peripherals.pins.gpio18.into(),
+            esp_idf_svc::hal::gpio::Pull::Up,
+            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+        )?;
 
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            }
-        });
-
-        let mut btn7 = esp_idf_svc::hal::gpio::PinDriver::input(peripherals.pins.gpio7)?;
-        btn7.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
-        btn7.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::AnyEdge)?;
-
-        let tx_ = tx.clone();
-        runtime.spawn(async move {
-            loop {
-                if let Err(e) = btn7.wait_for_falling_edge().await {
-                    log::error!("Button interrupt error: {:?}", e);
-                    continue;
-                }
-
-                log::info!("Button 7 pressed");
-                if let Err(e) = tx_.send(app::Event::Accept).await {
-                    log::error!("Failed to send K7 event: {:?}", e);
-                    break;
-                }
-
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            }
-        });
-
-        let mut pin16 = esp_idf_svc::hal::gpio::PinDriver::input(peripherals.pins.gpio16)?;
-        let mut pin17 = esp_idf_svc::hal::gpio::PinDriver::input(peripherals.pins.gpio17)?;
-        pin16.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
-        pin17.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
-        pin16.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::AnyEdge)?;
-        // pin17.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::NegEdge)?;
-
-        let tx_ = tx.clone();
-        runtime.spawn(async move {
-            loop {
-                if let Err(e) = pin16.wait_for_any_edge().await {
-                    log::error!("Button interrupt error: {:?}", e);
-                    continue;
-                }
-
-                if let Err(e) = if pin16.is_high() {
-                    if pin17.is_low() {
-                        tx_.send(app::Event::RotateDown)
-                    } else {
-                        tx_.send(app::Event::RotateUp)
-                    }
-                } else {
-                    if pin17.is_low() {
-                        tx_.send(app::Event::RotateUp)
-                    } else {
-                        tx_.send(app::Event::RotateDown)
-                    }
-                }
-                .await
-                {
-                    log::error!("Failed to send rotate event: {:?}", e);
-                    break;
-                }
-            }
-        });
-
-        let mut pin18 = esp_idf_svc::hal::gpio::PinDriver::input(peripherals.pins.gpio18)?;
-        pin18.set_pull(esp_idf_svc::hal::gpio::Pull::Up)?;
-        pin18.set_interrupt_type(esp_idf_svc::hal::gpio::InterruptType::AnyEdge)?;
-
-        let tx_ = tx.clone();
-        runtime.spawn(async move {
-            loop {
-                if let Err(e) = pin18.wait_for_falling_edge().await {
-                    log::error!("Button interrupt error: {:?}", e);
-                    continue;
-                }
-
-                log::info!("Button RotatePush pressed");
-                if let Err(e) = tx_.send(app::Event::RotatePush).await {
-                    log::error!("Failed to send RotatePush event: {:?}", e);
-                    break;
-                }
-
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            }
-        });
+        runtime.spawn(app::key_task::rotate_push_key(pin18, tx.clone()));
     }
 
     let mut ui = lcd::UI::new_with_target(target);
