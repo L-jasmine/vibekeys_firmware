@@ -60,6 +60,8 @@ impl Setting {
                 .flatten()
                 .unwrap_or(1024 * 1024);
 
+            log::info!("Background PNG size in NVS: {} bytes", background_png_size);
+
             let mut png_buf = vec![0; background_png_size];
             let png_buf_ = nvs
                 .get_blob("background_png", &mut png_buf)?
@@ -76,6 +78,7 @@ impl Setting {
                 png_buf
             }
         } else {
+            log::info!("No background PNG found in NVS, using default.");
             lcd::DEFAULT_BACKGROUND.to_vec()
         };
 

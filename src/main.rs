@@ -82,10 +82,11 @@ fn main() -> anyhow::Result<()> {
 
     let nvs = esp_idf_svc::nvs::EspDefaultNvs::new(partition, "setting", true)?;
 
-    let setting = bt_wifi_mode::Setting::load_from_nvs(&nvs)?;
+    let mut setting = bt_wifi_mode::Setting::load_from_nvs(&nvs)?;
 
     if btn4.is_low() || setting.need_init() {
         esp32_nimble::BLEDevice::set_device_name("VibeKeys-MAX")?;
+        setting.background_png.0.clear();
 
         let (tx, rx) = std::sync::mpsc::channel();
         let setting_arc = Arc::new(Mutex::new((setting, nvs)));
@@ -160,7 +161,7 @@ fn main() -> anyhow::Result<()> {
 
     lcd::display_png(
         &mut target,
-        lcd::DEFAULT_BACKGROUND,
+        setting.background_png.0.as_slice(),
         std::time::Duration::from_secs(2),
     )?;
     std::thread::sleep(std::time::Duration::from_secs(2));
