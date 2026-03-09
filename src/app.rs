@@ -1,5 +1,7 @@
+use embedded_graphics::prelude::WebColors;
+
 use crate::{
-    lcd,
+    lcd::{self, ColorFormat},
     protocol::{self},
 };
 
@@ -54,16 +56,12 @@ async fn select_event(
 pub async fn run(
     uri: String,
     ui: &mut crate::lcd::UI,
-    mut rx: tokio::sync::mpsc::Receiver<Event>,
+    mut rx: crate::audio::EventRx,
 ) -> anyhow::Result<()> {
     let mut server = crate::ws::Server::new(uri).await?;
     let mut start_submit_audio = false;
 
-    ui.show_notification(
-        lcd::NotificationLevel::Info,
-        "Server Connected",
-        Some("Success"),
-    )?;
+    ui.show_notification(ColorFormat::CSS_DARK_GREEN, "Server Connected")?;
     ui.start_input("Ready for input")?;
 
     while let Some(evt) = select_event(&mut server, &mut rx).await {
@@ -77,6 +75,7 @@ pub async fn run(
                             server
                                 .send(protocol::ClientMessage::voice_input_start(Some(16000)))
                                 .await?;
+                            ui.refresh_input_if_waiting()?;
                         }
                         let audio_buffer_u8 = unsafe {
                             std::slice::from_raw_parts(chunk.as_ptr() as *const u8, chunk.len() * 2)
@@ -89,6 +88,7 @@ pub async fn run(
                     }
                     Event::MicAudioChunkEnd => {
                         start_submit_audio = false;
+                        ui.refresh_input_if_waiting()?;
                         server
                             .send(protocol::ClientMessage::voice_input_end())
                             .await?;
@@ -106,10 +106,6 @@ pub async fn run(
                                     .await?;
                             }
                             lcd::UiState::ShowingNotification { .. } => {
-                                ui.handle_key_event_on_displaying_text(evt, &mut server)
-                                    .await?;
-                            }
-                            lcd::UiState::ShowingText { .. } => {
                                 ui.handle_key_event_on_displaying_text(evt, &mut server)
                                     .await?;
                             }
@@ -137,14 +133,6 @@ pub async fn run(
 }
 
 impl lcd::UI {
-    async fn handle_key_event(
-        &mut self,
-        evt: Event,
-        server: &mut crate::ws::Server,
-    ) -> anyhow::Result<()> {
-        todo!()
-    }
-
     async fn handle_key_event_on_waiting_input(
         &mut self,
         evt: Event,

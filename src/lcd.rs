@@ -113,6 +113,7 @@ pub fn flush_display(color_data: &[u8], x_start: i32, y_start: i32, x_end: i32, 
     }
 }
 
+/*
 const LEDC_MAX_DUTY: u32 = (1 << 13) - 1;
 pub fn set_backlight<'d>(
     ledc_driver: &mut esp_idf_svc::hal::ledc::LedcDriver<'d>,
@@ -141,6 +142,8 @@ pub fn backlight_init(
     Ok(ledc_driver)
 }
 
+*/
+
 #[derive(Debug, Clone)]
 pub struct MyTextStyle {
     pub font_style: U8g2TextStyle<ColorFormat>,
@@ -165,9 +168,11 @@ impl embedded_graphics::text::renderer::TextRenderer for MyTextStyle {
 
         if let Some(bg) = self.bg_color {
             let text_metrics = self.font_style.measure_string(text, position, baseline);
-            text_metrics
-                .bounding_box
-                .draw_styled(&PrimitiveStyle::with_fill(bg), target)?;
+            Rectangle::new(
+                position,
+                Size::new(text_metrics.bounding_box.size.width + 1, self.line_height()),
+            )
+            .draw_styled(&PrimitiveStyle::with_fill(bg), target)?;
         }
 
         self.font_style
@@ -185,6 +190,10 @@ impl embedded_graphics::text::renderer::TextRenderer for MyTextStyle {
         D: DrawTarget<Color = Self::Color>,
     {
         position.y += self.vertical_offset;
+        if let Some(bg) = self.bg_color {
+            Rectangle::new(position, Size::new(width, self.line_height()))
+                .draw_styled(&PrimitiveStyle::with_fill(bg), target)?;
+        }
         self.font_style
             .draw_whitespace(width, position, baseline, target)
     }
@@ -406,45 +415,52 @@ pub fn display_text(
 /// UI 渲染消息类型 (对应 protocol.rs 中的 ServerMessage)
 #[derive(Clone)]
 pub enum UiMessage {
-    /// 屏幕显示文本
-    ScreenText(String),
-
     /// 屏幕显示图片
-    ScreenImage { data: Vec<u8>, format: ImageFormat },
+    ScreenImage {
+        data: Vec<u8>,
+        format: ImageFormat,
+    },
 
     /// 通知消息
     Notification {
-        level: NotificationLevel,
+        color: ColorFormat,
         message: String,
         title: Option<String>,
     },
 
     /// 请求输入
-    GetInput { prompt: String },
+    GetInput {
+        prompt: String,
+    },
 
     /// 提供选择项
-    Choices { title: String, options: Vec<String> },
+    Choices {
+        id: String,
+        title: String,
+        options: Vec<String>,
+    },
 
     /// ASR 结果
     AsrResult(String),
+
+    Status(String),
 }
 
 impl Debug for UiMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            UiMessage::ScreenText(text) => f.debug_tuple("ScreenText").field(text).finish(),
             UiMessage::ScreenImage { data, format } => f
                 .debug_struct("ScreenImage")
                 .field("format", format)
                 .field("data_len", &data.len())
                 .finish(),
             UiMessage::Notification {
-                level,
                 message,
                 title,
+                color,
             } => f
                 .debug_struct("Notification")
-                .field("level", level)
+                .field("color", color)
                 .field("message", &message.chars().take(20).collect::<String>())
                 .field("title", title)
                 .finish(),
@@ -452,14 +468,19 @@ impl Debug for UiMessage {
                 .debug_tuple("GetInput")
                 .field(&prompt.chars().take(20).collect::<String>())
                 .finish(),
-            UiMessage::Choices { title, options } => f
+            UiMessage::Choices { id, title, options } => f
                 .debug_struct("Choices")
+                .field("id", id)
                 .field("title", &title.chars().take(20).collect::<String>())
                 .field("options_count", &options.len())
                 .finish(),
             UiMessage::AsrResult(text) => f
                 .debug_tuple("AsrResult")
                 .field(&text.chars().take(20).collect::<String>())
+                .finish(),
+            UiMessage::Status(status) => f
+                .debug_tuple("Status")
+                .field(&status.chars().take(20).collect::<String>())
                 .finish(),
         }
     }
@@ -487,7 +508,7 @@ impl NotificationLevel {
     pub fn to_color(self) -> ColorFormat {
         match self {
             NotificationLevel::Info => ColorFormat::new(0, 100, 255), // 蓝色
-            NotificationLevel::Success => ColorFormat::new(0, 200, 0), // 绿色
+            NotificationLevel::Success => ColorFormat::new(0, 200, 255), // 青色
             NotificationLevel::Warning => ColorFormat::new(255, 150, 0), // 橙色
             NotificationLevel::Error => ColorFormat::new(255, 0, 0),  // 红色
         }
@@ -502,17 +523,11 @@ pub enum UiState {
     /// 空闲状态
     Idle,
 
-    /// 显示文本
-    ShowingText { text: String },
-
     /// 显示图片
     ShowingImage,
 
     /// 显示通知
-    ShowingNotification {
-        level: NotificationLevel,
-        message: String,
-    },
+    ShowingNotification { color: ColorFormat, message: String },
 
     /// 等待输入
     WaitingInput {
@@ -523,6 +538,7 @@ pub enum UiState {
 
     /// 等待选择
     WaitingChoice {
+        id: String,
         title: String,
         options: Vec<String>,
         selected_index: i32,
@@ -556,6 +572,7 @@ pub struct UI {
     display: FrameBuffer,
     /// 当前 UI 状态
     state: UiState,
+    status_bar: String,
     /// UI 配置
     config: UiConfig,
     scroll_offset: i32,
@@ -572,6 +589,7 @@ impl UI {
             config: UiConfig::default(),
             scroll_offset: 0,
             waiting_input_prompt: String::new(),
+            status_bar: "[N]".to_string(),
         }
     }
 
@@ -583,6 +601,7 @@ impl UI {
             config: UiConfig::default(),
             scroll_offset: 0,
             waiting_input_prompt: String::new(),
+            status_bar: "[N]".to_string(),
         }
     }
 
@@ -590,23 +609,23 @@ impl UI {
     pub fn handle_message(&mut self, msg: UiMessage) -> anyhow::Result<()> {
         log::info!("Handling UI message: {:?}", msg);
         match msg {
-            UiMessage::ScreenText(text) => self.show_text(&text),
             UiMessage::ScreenImage { data, format } => self.show_image(&data, format),
-            UiMessage::Notification {
-                level,
-                message,
-                title,
-            } => self.show_notification(level, &message, title.as_deref()),
+            UiMessage::Notification { message, color, .. } => {
+                self.show_notification(color, &message)
+            }
             UiMessage::GetInput { prompt } => self.start_input(&prompt),
-            UiMessage::Choices { title, options } => self.show_choices(&title, &options),
+            UiMessage::Choices { title, options, id } => self.show_choices(&id, &title, &options),
             UiMessage::AsrResult(text) => self.show_asr_result(&text),
+            UiMessage::Status(status) => {
+                self.status_bar = status;
+                Ok(())
+            }
         }
     }
 
     pub fn reset_scroll(&mut self) -> anyhow::Result<()> {
         self.scroll_offset = 0;
         match &self.state {
-            UiState::ShowingText { .. } => self.refresh_text(),
             UiState::ShowingNotification { .. } => self.refresh_notification(),
             UiState::WaitingChoice { .. } => self.refresh_choices_display(),
             _ => Ok(()),
@@ -616,7 +635,6 @@ impl UI {
     pub fn scroll_up(&mut self) -> anyhow::Result<()> {
         self.scroll_offset -= 14;
         match &self.state {
-            UiState::ShowingText { .. } => self.refresh_text(),
             UiState::ShowingNotification { .. } => self.refresh_notification(),
             UiState::WaitingChoice { .. } => self.refresh_choices_display(),
             _ => Ok(()),
@@ -626,29 +644,10 @@ impl UI {
     pub fn scroll_down(&mut self) -> anyhow::Result<()> {
         self.scroll_offset += 14;
         match &self.state {
-            UiState::ShowingText { .. } => self.refresh_text(),
             UiState::ShowingNotification { .. } => self.refresh_notification(),
             UiState::WaitingChoice { .. } => self.refresh_choices_display(),
             _ => Ok(()),
         }
-    }
-
-    /// 显示文本
-    pub fn show_text(&mut self, text: &str) -> anyhow::Result<()> {
-        self.state = UiState::ShowingText {
-            text: text.to_string(),
-        };
-        self.scroll_offset = 0;
-        display_text(&mut self.display, text, self.scroll_offset)?;
-        Ok(())
-    }
-
-    /// 刷新文本显示（用于滚动）
-    pub fn refresh_text(&mut self) -> anyhow::Result<()> {
-        if let UiState::ShowingText { text } = &self.state {
-            display_text(&mut self.display, text, self.scroll_offset)?;
-        }
-        Ok(())
     }
 
     /// 显示图片
@@ -704,36 +703,36 @@ impl UI {
     }
 
     /// 显示通知
-    pub fn show_notification(
-        &mut self,
-        level: NotificationLevel,
-        message: &str,
-        title: Option<&str>,
-    ) -> anyhow::Result<()> {
+    pub fn show_notification(&mut self, color: ColorFormat, message: &str) -> anyhow::Result<()> {
         self.state = UiState::ShowingNotification {
-            level,
+            color,
             message: message.to_string(),
         };
         self.scroll_offset = 0;
 
-        let color = level.to_color();
         // self.display.fill_color(self.config.notification_bg)?;
+
+        const LINE_HEIGHT: i32 = 14;
 
         // 绘制顶部颜色条表示级别
         let bounding_box = self.display.bounding_box();
-        let top_bar = Rectangle::new(Point::new(0, 0), Size::new(bounding_box.size.width, 4));
+        let top_bar = Rectangle::new(
+            Point::new(0, 0),
+            Size::new(bounding_box.size.width, LINE_HEIGHT as u32),
+        );
         top_bar.draw_styled(&PrimitiveStyle::with_fill(color), &mut self.display)?;
 
-        // 显示标题（如果有）
-        let y_offset = if let Some(title) = title {
-            self.draw_text(title, Point::new(2, 6), color, true)?;
-            18
-        } else {
-            6
-        };
+        let status_bar_str = format!("{}", self.status_bar.clone());
+
+        self.draw_text(
+            &status_bar_str,
+            Point::new(4, 0),
+            ColorFormat::CSS_WHEAT,
+            false,
+        )?;
 
         // 显示消息
-        self.draw_text_wrapped(message, Point::new(2, y_offset), self.config.text_color)?;
+        self.draw_text_wrapped(message, Point::new(2, LINE_HEIGHT), self.config.text_color)?;
 
         self.display.flush()?;
         Ok(())
@@ -745,21 +744,26 @@ impl UI {
             return Ok(()); // 已经在输入模式，不重复设置
         }
 
-        if matches!(
-            self.state,
-            UiState::ShowingNotification { .. } | UiState::ShowingText { .. }
-        ) {
+        // TODO: change state bar
+
+        if let UiState::ShowingNotification { color, .. } = &mut self.state {
+            *color = ColorFormat::new(255, 150, 0); // 切换到输入模式，先把通知颜色改为橙色
             self.waiting_input_prompt = prompt.to_string();
-            return Ok(()); // 正在显示文本或通知，先保存输入提示，等刷新时再切换到输入模式
+            return Ok(()); // 正在显示通知，先保存输入提示，等刷新时再切换到输入模式
         }
 
-        self.state = UiState::WaitingInput {
-            prompt: prompt.to_string(),
-            current_input: String::new(),
-            cursor_pos: 0,
-        };
-        self.refresh_input_display()?;
-        Ok(())
+        if cfg!(debug_assertions) {
+            unreachable!("Unexpected state when starting input: {:?}", self.state);
+        } else {
+            // unreachable in current design, but just in case
+            self.state = UiState::WaitingInput {
+                prompt: prompt.to_string(),
+                current_input: String::new(),
+                cursor_pos: 0,
+            };
+            self.refresh_input_display()?;
+            Ok(())
+        }
     }
 
     /// 刷新输入显示
@@ -774,6 +778,21 @@ impl UI {
             (prompt.clone(), current_input.clone(), *cursor_pos)
         } else {
             return Ok(());
+        };
+
+        // 检查麦克风状态
+        let is_mic_on = crate::audio::MIC_ON.load(std::sync::atomic::Ordering::Relaxed);
+
+        // 先绘制麦克风状态条
+        let y_offset = if is_mic_on {
+            let mic_color = ColorFormat::new(255, 50, 50); // 红色表示录音中
+            let bounding_box = self.display.bounding_box();
+            let top_bar = Rectangle::new(Point::new(0, 0), Size::new(bounding_box.size.width, 10));
+            top_bar.draw_styled(&PrimitiveStyle::with_fill(mic_color), &mut self.display)?;
+            self.draw_text("● Recording", Point::new(0, 0), mic_color, true)?;
+            10
+        } else {
+            2
         };
 
         // 使用 ANSI 代码标记光标位置，prompt 用灰色背景
@@ -798,13 +817,18 @@ impl UI {
             format!("\x1b[48;5;240m{}\x1b[49m\n{}", prompt, input_with_cursor) // prompt 灰色背景
         };
 
-        // 绘制整个输入区域
-        self.draw_text_wrapped(&display_text, Point::new(2, 2), self.config.text_color)?;
+        // 绘制整个输入区域（y_offset 根据麦克风状态调整）
+        self.draw_text_wrapped(
+            &display_text,
+            Point::new(2, y_offset),
+            self.config.text_color,
+        )?;
 
         self.display.flush()?;
         Ok(())
     }
 
+    #[allow(unused)]
     /// 添加输入字符（在光标位置插入）
     pub fn add_input_char(&mut self, c: char) -> anyhow::Result<()> {
         if let UiState::WaitingInput {
@@ -841,6 +865,7 @@ impl UI {
         Ok(())
     }
 
+    #[allow(unused)]
     /// 删除光标后的字符（delete）
     pub fn delete_char_at_cursor(&mut self) -> anyhow::Result<()> {
         if let UiState::WaitingInput {
@@ -928,6 +953,7 @@ impl UI {
         Ok(())
     }
 
+    #[allow(unused)]
     /// 获取光标位置
     pub fn get_cursor_pos(&self) -> Option<usize> {
         if let UiState::WaitingInput { cursor_pos, .. } = &self.state {
@@ -937,15 +963,44 @@ impl UI {
         }
     }
 
+    /// 刷新输入界面（用于麦克风状态变化时）
+    pub fn refresh_input_if_waiting(&mut self) -> anyhow::Result<()> {
+        match self.state {
+            UiState::WaitingInput { .. } => self.refresh_input_display(),
+            _ => {
+                if self.waiting_input_prompt.is_empty() {
+                    Ok(())
+                } else {
+                    // 之前正在显示通知时收到输入请求，先切换到输入模式
+                    self.state = UiState::WaitingInput {
+                        prompt: self.take_waiting_input_prompt(),
+                        current_input: String::new(),
+                        cursor_pos: 0,
+                    };
+                    self.refresh_input_display()
+                }
+            }
+        }
+    }
+
     /// 显示选择项
-    pub fn show_choices(&mut self, title: &str, options: &[String]) -> anyhow::Result<()> {
-        if let UiState::WaitingChoice { title: t, .. } = &self.state {
-            if t == title {
+    pub fn show_choices(
+        &mut self,
+        id: &str,
+        title: &str,
+        options: &[String],
+    ) -> anyhow::Result<()> {
+        if let UiState::WaitingChoice {
+            id: existing_id, ..
+        } = &self.state
+        {
+            if existing_id == id {
                 return Ok(()); // 已经在选择模式，不重复设置
             }
         }
 
         self.state = UiState::WaitingChoice {
+            id: id.to_string(),
             title: title.to_string(),
             options: options.to_vec(),
             selected_index: 0,
@@ -961,6 +1016,7 @@ impl UI {
             title,
             options,
             selected_index,
+            ..
         } = &self.state
         {
             (title.clone(), options.clone(), *selected_index)
@@ -985,10 +1041,10 @@ impl UI {
         for (i, option) in render_options.iter().enumerate() {
             if i as i32 == selected_index {
                 // 选中项：蓝色背景，白色文字
-                display_text.push_str(&format!("\x1b[44;37m> {}\x1b[49m\n", option));
+                display_text.push_str(&format!("\x1b[44;37m[ {} ]\x1b[49m\n", option));
             } else {
                 // 未选中项：普通文字
-                display_text.push_str(&format!("  {}\n", option));
+                display_text.push_str(&format!(" {}\n", option));
             }
         }
 
@@ -1016,6 +1072,7 @@ impl UI {
         Ok(())
     }
 
+    #[allow(unused)]
     /// 选择上一项（可循环）
     pub fn prev_choice(&mut self) -> anyhow::Result<()> {
         if let UiState::WaitingChoice {
@@ -1059,18 +1116,34 @@ impl UI {
 
     /// 刷新通知显示（用于滚动）
     pub fn refresh_notification(&mut self) -> anyhow::Result<()> {
-        if let UiState::ShowingNotification { level, message } = &self.state {
-            let color = level.to_color();
+        if let UiState::ShowingNotification { color, message } = &self.state {
             // self.display.fill_color(self.config.notification_bg)?;
             let message = message.clone();
+            let color = *color;
+
+            const LINE_HEIGHT: i32 = 10;
 
             // 绘制顶部颜色条表示级别
             let bounding_box = self.display.bounding_box();
-            let top_bar = Rectangle::new(Point::new(0, 0), Size::new(bounding_box.size.width, 4));
+            let top_bar = Rectangle::new(
+                Point::new(0, 0),
+                Size::new(bounding_box.size.width, LINE_HEIGHT as u32),
+            );
             top_bar.draw_styled(&PrimitiveStyle::with_fill(color), &mut self.display)?;
 
+            let status_bar_str = self.status_bar.clone();
+
+            self.draw_text(
+                &status_bar_str,
+                Point::new(4, 0),
+                ColorFormat::CSS_WHEAT,
+                false,
+            )?;
+
+            let y_offset = LINE_HEIGHT;
+
             // 显示消息
-            self.draw_text_wrapped(&message, Point::new(2, 6), self.config.text_color)?;
+            self.draw_text_wrapped(&message, Point::new(2, y_offset), self.config.text_color)?;
 
             self.display.flush()?;
         }
@@ -1087,7 +1160,7 @@ impl UI {
         } else if !self.waiting_input_prompt.is_empty() || matches!(self.state, UiState::Idle) {
             // 如果之前显示过文本或通知，并且有未进入输入模式的提示，先切换到输入模式再插入
             self.state = UiState::WaitingInput {
-                prompt: self.waiting_input_prompt.clone(),
+                prompt: self.take_waiting_input_prompt(),
                 current_input: String::new(),
                 cursor_pos: 0,
             };
@@ -1099,13 +1172,17 @@ impl UI {
             } else {
                 text.to_string()
             };
-            self.show_notification(NotificationLevel::Info, &preview, Some("ASR"))
+            self.show_notification(NotificationLevel::Info.to_color(), &preview)
         }
     }
 
     /// 获取当前状态
     pub fn state(&self) -> &UiState {
         &self.state
+    }
+
+    fn take_waiting_input_prompt(&mut self) -> String {
+        std::mem::take(&mut self.waiting_input_prompt)
     }
 
     /// 清屏并重置到空闲状态
@@ -1124,32 +1201,36 @@ impl UI {
         text: &str,
         position: Point,
         color: ColorFormat,
-        _bold: bool,
+        centered: bool,
     ) -> anyhow::Result<()> {
-        let font = u8g2_fonts::fonts::u8g2_font_wqy12_t_gb2312;
+        const LINE_HEIGHT: u32 = 14;
+
+        let font = u8g2_fonts::fonts::u8g2_font_boutique_bitmap_7x7_t_gb2312;
 
         let style = MyTextStyle {
             font_style: U8g2TextStyle::new(font, color),
-            vertical_offset: 3,
-            bg_color: None,
+            vertical_offset: 0,
+            bg_color: Some(ColorFormat::CSS_BLACK),
         };
 
         // 使用 TextBox 绘制单行文本 (与 display_text 保持一致)
-        let text_end = Point::new(position.x + DISPLAY_WIDTH as i32, position.y + 12);
         let text_box = Rectangle::new(
             position,
-            Size::new(
-                (text_end.x - position.x) as u32,
-                (text_end.y - position.y) as u32,
-            ),
+            Size::new((DISPLAY_WIDTH as i32 - position.x) as u32, LINE_HEIGHT),
         );
+
+        let alignment = if centered {
+            embedded_text::alignment::HorizontalAlignment::Center
+        } else {
+            embedded_text::alignment::HorizontalAlignment::Left
+        };
 
         let textbox_style = embedded_text::style::TextBoxStyleBuilder::new()
             .height_mode(embedded_text::style::HeightMode::ShrinkToText(
                 embedded_text::style::VerticalOverdraw::FullRowsOnly,
             ))
-            .alignment(embedded_text::alignment::HorizontalAlignment::Left)
-            .line_height(embedded_graphics::text::LineHeight::Pixels(14))
+            .alignment(alignment)
+            .line_height(embedded_graphics::text::LineHeight::Pixels(LINE_HEIGHT))
             .build();
 
         embedded_text::TextBox::with_textbox_style(text, text_box, style, textbox_style)
@@ -1210,7 +1291,6 @@ impl Default for UI {
 impl From<crate::protocol::ServerMessage> for UiMessage {
     fn from(msg: crate::protocol::ServerMessage) -> Self {
         match msg {
-            crate::protocol::ServerMessage::ScreenText(data) => UiMessage::ScreenText(data.text),
             crate::protocol::ServerMessage::ScreenImage(data) => {
                 let format = match data.format {
                     crate::protocol::ImageFormat::Png => ImageFormat::Png,
@@ -1223,14 +1303,25 @@ impl From<crate::protocol::ServerMessage> for UiMessage {
                 }
             }
             crate::protocol::ServerMessage::Notification(data) => {
-                let level = match data.level {
-                    crate::protocol::NotificationLevel::Info => NotificationLevel::Info,
-                    crate::protocol::NotificationLevel::Success => NotificationLevel::Success,
-                    crate::protocol::NotificationLevel::Warning => NotificationLevel::Warning,
-                    crate::protocol::NotificationLevel::Error => NotificationLevel::Error,
+                let color = match data.level {
+                    crate::protocol::NotificationLevel::Info => NotificationLevel::Info.to_color(),
+                    crate::protocol::NotificationLevel::Success => {
+                        NotificationLevel::Success.to_color()
+                    }
+                    crate::protocol::NotificationLevel::Warning => {
+                        NotificationLevel::Warning.to_color()
+                    }
+                    crate::protocol::NotificationLevel::Error => {
+                        NotificationLevel::Error.to_color()
+                    }
+                    crate::protocol::NotificationLevel::Custom => {
+                        // (None,R,G,B)
+                        let color_arr = data.color.to_be_bytes();
+                        ColorFormat::new(color_arr[1], color_arr[2], color_arr[3])
+                    }
                 };
                 UiMessage::Notification {
-                    level,
+                    color,
                     message: data.message,
                     title: data.title,
                 }
@@ -1239,14 +1330,23 @@ impl From<crate::protocol::ServerMessage> for UiMessage {
                 prompt: data.prompt,
             },
             crate::protocol::ServerMessage::Choices(data) => UiMessage::Choices {
+                id: data.id.unwrap_or_default(),
                 title: data.title,
                 options: data.options,
             },
             crate::protocol::ServerMessage::AsrResult(text) => UiMessage::AsrResult(text),
             crate::protocol::ServerMessage::PtyOutput(_) => {
-                // PTY 输出在主循环处理，不在这里渲染
-                UiMessage::ScreenText("".to_string())
+                if cfg!(debug_assertions) {
+                    unreachable!("Received PtyOutput message, ignoring in UI conversion")
+                } else {
+                    UiMessage::Notification {
+                        color: NotificationLevel::Warning.to_color(),
+                        message: "Received unexpected PtyOutput message".to_string(),
+                        title: Some("Warning".to_string()),
+                    }
+                }
             }
+            crate::protocol::ServerMessage::Status(s) => UiMessage::Status(s),
         }
     }
 }

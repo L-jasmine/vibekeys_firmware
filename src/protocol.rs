@@ -91,10 +91,6 @@ pub enum ServerMessage {
     #[serde(rename = "pty_out")]
     PtyOutput(Vec<u8>),
 
-    /// 屏幕显示文本
-    #[serde(rename = "screen_text")]
-    ScreenText(ScreenTextData),
-
     /// 屏幕显示图片
     #[serde(rename = "screen_image")]
     ScreenImage(ScreenImageData),
@@ -114,13 +110,10 @@ pub enum ServerMessage {
     /// 提供选择项
     #[serde(rename = "choices")]
     Choices(ChoicesData),
-}
 
-/// 屏幕显示文本数据
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScreenTextData {
-    /// 文本内容
-    pub text: String,
+    /// 设置状态栏
+    #[serde(rename = "status")]
+    Status(String),
 }
 
 /// 屏幕显示图片数据
@@ -145,6 +138,11 @@ pub struct NotificationData {
     /// 标题（可选）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+
+    /// 自定义 RGB 颜色（仅当 level 为 Custom 时生效）
+    /// BE BIG-ENDIAN: 0xRRGGBB
+    #[serde(default)]
+    pub color: u32,
 }
 
 /// 请求输入数据
@@ -157,6 +155,10 @@ pub struct GetInputData {
 /// 提供选择项数据
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChoicesData {
+    /// 工具调用 ID（用于识别是否是同一个 tool 请求）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+
     /// 标题/问题
     pub title: String,
 
@@ -183,10 +185,13 @@ pub enum NotificationLevel {
     Success,
     Warning,
     Error,
+    /// 自定义颜色（需要配合 color 字段使用）
+    Custom,
 }
 
 // ========== 客户端消息构造 ==========
 
+#[allow(dead_code)]
 impl ClientMessage {
     /// 创建 PTY 输入消息
     pub fn pty_input(data: Vec<u8>) -> Self {
@@ -222,19 +227,20 @@ impl ClientMessage {
     pub fn input(text: impl Into<String>) -> Self {
         Self::Input(text.into())
     }
+
+    /// 创建切换目录消息
+    pub fn change_dir(path: impl Into<String>) -> Self {
+        Self::ChangeDir(path.into())
+    }
 }
 
 // ========== 服务器消息构造 ==========
 
+#[allow(dead_code)]
 impl ServerMessage {
     /// 创建 PTY 输出消息
     pub fn pty_output(data: Vec<u8>) -> Self {
         Self::PtyOutput(data)
-    }
-
-    /// 创建屏幕文本消息
-    pub fn screen_text(text: impl Into<String>) -> Self {
-        Self::ScreenText(ScreenTextData { text: text.into() })
     }
 
     /// 创建屏幕图片消息
@@ -248,6 +254,7 @@ impl ServerMessage {
             level,
             message: message.into(),
             title: None,
+            color: 0,
         })
     }
 
@@ -261,6 +268,20 @@ impl ServerMessage {
     /// 创建提供选择项消息
     pub fn choices(title: impl Into<String>, options: Vec<String>) -> Self {
         Self::Choices(ChoicesData {
+            id: None,
+            title: title.into(),
+            options,
+        })
+    }
+
+    /// 创建提供选择项消息（带 ID）
+    pub fn choices_with_id(
+        id: impl Into<String>,
+        title: impl Into<String>,
+        options: Vec<String>,
+    ) -> Self {
+        Self::Choices(ChoicesData {
+            id: Some(id.into()),
             title: title.into(),
             options,
         })
@@ -270,10 +291,16 @@ impl ServerMessage {
     pub fn asr_result(text: impl Into<String>) -> Self {
         Self::AsrResult(text.into())
     }
+
+    /// 创建状态栏消息
+    pub fn status(text: impl Into<String>) -> Self {
+        Self::Status(text.into())
+    }
 }
 
 // ========== MessagePack 序列化 ==========
 
+#[allow(dead_code)]
 impl ClientMessage {
     /// 序列化为 MessagePack 字节
     pub fn to_msgpack(&self) -> Result<Vec<u8>, rmp_serde::encode::Error> {
@@ -296,6 +323,7 @@ impl ClientMessage {
     }
 }
 
+#[allow(dead_code)]
 impl ServerMessage {
     /// 序列化为 MessagePack 字节
     pub fn to_msgpack(&self) -> Result<Vec<u8>, rmp_serde::encode::Error> {
@@ -320,7 +348,6 @@ impl ServerMessage {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn test_client_pty_input_msgpack() {
@@ -413,19 +440,6 @@ mod tests {
     }
 
     #[test]
-    fn test_server_screen_text_msgpack() {
-        let msg = ServerMessage::screen_text("Hello, World!");
-        let bytes = msg.to_msgpack().unwrap();
-        let decoded = ServerMessage::from_msgpack(&bytes).unwrap();
-        match decoded {
-            ServerMessage::ScreenText(data) => {
-                assert_eq!(data.text, "Hello, World!");
-            }
-            _ => panic!("Wrong message type"),
-        }
-    }
-
-    #[test]
     fn test_server_notification_msgpack() {
         let msg = ServerMessage::notification(NotificationLevel::Info, "Test message");
         let bytes = msg.to_msgpack().unwrap();
@@ -471,6 +485,19 @@ mod tests {
                 assert_eq!(data.options[0], "选项A");
                 assert_eq!(data.options[1], "选项B");
                 assert_eq!(data.options[2], "选项C");
+            }
+            _ => panic!("Wrong message type"),
+        }
+    }
+
+    #[test]
+    fn test_server_status_msgpack() {
+        let msg = ServerMessage::status("Connected");
+        let bytes = msg.to_msgpack().unwrap();
+        let decoded = ServerMessage::from_msgpack(&bytes).unwrap();
+        match decoded {
+            ServerMessage::Status(text) => {
+                assert_eq!(text, "Connected");
             }
             _ => panic!("Wrong message type"),
         }
@@ -547,20 +574,6 @@ mod tests {
     }
 
     #[test]
-    fn test_server_screen_text_json() {
-        let msg = ServerMessage::screen_text("Hello");
-        let json = msg.to_json().unwrap();
-        println!("JSON: {}", json);
-        let decoded = ServerMessage::from_json(&json).unwrap();
-        match decoded {
-            ServerMessage::ScreenText(data) => {
-                assert_eq!(data.text, "Hello");
-            }
-            _ => panic!("Wrong message type"),
-        }
-    }
-
-    #[test]
     fn test_server_choices_json() {
         let msg = ServerMessage::choices("请选择", vec!["A".into(), "B".into()]);
         let json = msg.to_json().unwrap();
@@ -570,6 +583,20 @@ mod tests {
             ServerMessage::Choices(data) => {
                 assert_eq!(data.title, "请选择");
                 assert_eq!(data.options, vec!["A", "B"]);
+            }
+            _ => panic!("Wrong message type"),
+        }
+    }
+
+    #[test]
+    fn test_server_status_json() {
+        let msg = ServerMessage::status("Ready");
+        let json = msg.to_json().unwrap();
+        println!("JSON: {}", json);
+        let decoded = ServerMessage::from_json(&json).unwrap();
+        match decoded {
+            ServerMessage::Status(text) => {
+                assert_eq!(text, "Ready");
             }
             _ => panic!("Wrong message type"),
         }
