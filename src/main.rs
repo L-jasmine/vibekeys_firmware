@@ -1,16 +1,32 @@
-use embedded_graphics::prelude::DrawTarget;
-use esp_idf_svc::hal::i2c::I2C0;
+use std::sync::{Arc, Mutex};
 
-mod bt_keyboard;
-mod crab_img;
+use embedded_graphics::prelude::RgbColor;
+use esp_idf_svc::hal::gpio::{AnyIOPin, PinDriver};
+
+use crate::lcd::DisplayTargetDrive;
+
+mod ansi_plugin;
+mod app;
+mod audio;
+mod bt_keyboard_mode;
+mod bt_wifi_mode;
 mod i2c;
+mod lcd;
+mod protocol;
 mod wifi;
+mod ws;
 
-enum State {
-    Working,
-    Pending,
-    Stopped,
-    OnlyDisplay,
+type AnyBtn = PinDriver<'static, esp_idf_svc::hal::gpio::AnyIOPin, esp_idf_svc::hal::gpio::Input>;
+
+fn new_btn(
+    pin: AnyIOPin,
+    pull: esp_idf_svc::hal::gpio::Pull,
+    interrupt: esp_idf_svc::hal::gpio::InterruptType,
+) -> anyhow::Result<AnyBtn> {
+    let mut btn = PinDriver::input(pin)?;
+    btn.set_pull(pull)?;
+    btn.set_interrupt_type(interrupt)?;
+    Ok(btn)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -21,298 +37,272 @@ fn main() -> anyhow::Result<()> {
     let _fs = esp_idf_svc::io::vfs::MountedEventfs::mount(20)?;
     let partition = esp_idf_svc::nvs::EspDefaultNvsPartition::take()?;
 
-    let keys_map = esp_idf_svc::nvs::EspNvs::new(partition.clone(), "keys_map", true)?;
+    let mut bl = esp_idf_svc::hal::gpio::PinDriver::output(peripherals.pins.gpio11)?;
+    bl.set_low()?;
 
-    let mut ota = esp_idf_svc::ota::EspOta::new()?;
+    // let mut backlight = lcd::backlight_init(peripherals.pins.gpio11.into())?;
+    // lcd::set_backlight(&mut backlight, 40).unwrap();
 
-    esp32_nimble::BLEDevice::set_device_name("VibeKeys-MAX")?;
-    let ble_device = esp32_nimble::BLEDevice::take();
+    let btn0 = new_btn(
+        peripherals.pins.gpio0.into(),
+        esp_idf_svc::hal::gpio::Pull::Up,
+        esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+    )?;
 
-    let mut keyboard_and_mouse = bt_keyboard::KeyboardAndMouse::new(ble_device, 100)?;
-    let (controller_service, tx) = bt_keyboard::new_controller_service(ble_device)?;
+    log_heap();
 
-    let server = ble_device.get_server();
+    lcd::init_spi(
+        peripherals.spi3,
+        peripherals.pins.gpio21,
+        peripherals.pins.gpio47,
+    )?;
 
-    // server.advertise_on_disconnect(true);
-    server.on_authentication_complete(move |a, b, c| {
-        log::info!("Authentication complete: conn_result={:?}", c);
-    });
-    server.on_confirm_pin(move |a| {
-        log::info!("Confirm PIN: {}", a);
-        true
-    });
-    server.on_connect(move |a, b| {
-        log::info!("Client connected: desc={:?}", b);
-    });
+    lcd::init_lcd(
+        peripherals.pins.gpio12,
+        peripherals.pins.gpio13,
+        peripherals.pins.gpio14,
+    )?;
 
-    server.on_disconnect(move |a, b| {
-        log::info!("Client disconnected: desc={:?}", b);
-    });
+    let mut target = lcd::FrameBuffer::new(lcd::ColorFormat::WHITE);
+    target.flush()?;
+    lcd::display_text(&mut target, "VibeKeys Starting...\n Read setting", 0)?;
 
-    server.start()?;
-
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
-    bt_keyboard::start_ble_advertising(ble_device, keyboard_and_mouse.hid_service_id())?;
-
-    let r = start_lcd(
-        peripherals.i2c0,
-        peripherals.pins.gpio48,
-        peripherals.pins.gpio45,
+    let mut wifi = esp_idf_svc::wifi::EspWifi::new(peripherals.modem, sysloop.clone(), None)?;
+    let mac = wifi.sta_netif().get_mac().unwrap();
+    let dev_id = format!(
+        "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
     );
 
-    if let Err(e) = r {
-        log::error!("Failed to start LCD: {:?}", e);
-        controller_service.notify("LCD Init Failed");
-        return Err(e);
-    }
+    let btn4 = new_btn(
+        peripherals.pins.gpio4.into(),
+        esp_idf_svc::hal::gpio::Pull::Up,
+        esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+    )?;
 
-    let mut framebuffer = i2c::new_lcd_text_buffer();
-    framebuffer.clear(i2c::Color::Off)?;
-    i2c::lcd_display_bitmap(&framebuffer)?;
-    i2c::lcd_display_text(&mut framebuffer, "VibeKeys Ready")?;
+    let nvs = esp_idf_svc::nvs::EspDefaultNvs::new(partition, "setting", true)?;
 
-    let keys_pin = bt_keyboard::KeysPin(
-        peripherals.pins.gpio0,
-        peripherals.pins.gpio1,
-        peripherals.pins.gpio2,
-        peripherals.pins.gpio3,
-        peripherals.pins.gpio4,
-        peripherals.pins.gpio5,
-        peripherals.pins.gpio6,
-        peripherals.pins.gpio7,
-        peripherals.pins.gpio18,
-    );
+    let mut setting = bt_wifi_mode::Setting::load_from_nvs(&nvs)?;
 
-    std::thread::Builder::new()
-        .name("key_listener".to_string())
-        .stack_size(1024 * 8)
-        .spawn(move || {
-            if let Err(e) = bt_keyboard::start_key_listen(tx, keys_pin) {
-                log::error!("Key listening task failed: {:?}", e);
-            }
-        })?;
+    if btn4.is_low() || setting.need_init() {
+        esp32_nimble::BLEDevice::set_device_name("VibeKeys-MAX")?;
+        setting.background_png.0.clear();
 
-    if let Err(e) = ota.mark_running_slot_valid() {
-        log::error!("Failed to mark running slot valid: {:?}", e);
-        controller_service.notify("OTA Mark Valid Failed");
-        return Err(anyhow::anyhow!("OTA mark running slot valid failed"));
-    }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let setting_arc = Arc::new(Mutex::new((setting, nvs)));
+        lcd::display_text(&mut target, "Setting Mode", 0)?;
+        bt_wifi_mode::bt(&dev_id, setting_arc.clone(), tx)?;
 
-    let mut state = State::Stopped;
-    let mut tick = 0;
+        match rx.recv() {
+            Ok(bt_wifi_mode::BTevent::Reset) => {
+                let mut lock = setting_arc.lock().unwrap();
 
-    loop {
-        if let Ok(event) = controller_service
-            .rx
-            .recv_timeout(std::time::Duration::from_millis(1000))
-        {
-            match event {
-                bt_keyboard::ControllerCommand::GoToOta => {
-                    ota.mark_running_slot_invalid_and_reboot();
-                }
-                bt_keyboard::ControllerCommand::DisplayKeyboard(text) => {
-                    println!("Display on LCD: {}", text);
-                    match text.as_str() {
-                        "[working]" => state = State::Working,
-                        "[pending]" => state = State::Pending,
-                        "[stopped]" => state = State::Stopped,
-                        _ => state = State::OnlyDisplay,
-                    }
-                    framebuffer.clear(i2c::Color::Off)?;
-                    i2c::lcd_display_text(&mut framebuffer, &text)?;
-                }
-                bt_keyboard::ControllerCommand::KeyboardPress(keycode) => {
-                    {
-                        let mut adv = ble_device.get_advertising().lock();
-                        log::info!("Checking advertising state... {}", adv.is_advertising());
-                        if !adv.is_advertising() {
-                            adv.start()?;
+                {
+                    let (png, b) = &mut lock.0.background_png;
+                    if *b {
+                        lcd::display_png(&mut target, png, std::time::Duration::from_secs(3))
+                            .unwrap();
+                        let png = std::mem::take(png);
+                        if let Err(_) = lock.1.set_blob("background_png", &png) {
+                            lcd::display_text(
+                                &mut target,
+                                &format!("Failed to save background PNG"),
+                                0,
+                            )
+                            .unwrap();
                         }
                     }
-
-                    // keyboard_and_mouse.press_key(keycode)?;
-                    println!("Key Pressed: {}", keycode);
-                    handle_key_event(&mut keyboard_and_mouse, keycode, true)?;
                 }
-                bt_keyboard::ControllerCommand::KeyboardRelease(keycode) => {
-                    // keyboard_and_mouse.release_key(keycode)?;
-                    println!("Key Released: {}", keycode);
-                    handle_key_event(&mut keyboard_and_mouse, keycode, false)?;
+                for i in 1..=3 {
+                    lcd::display_text(
+                        &mut target,
+                        &format!("Received Setting from BLE\n SSID:{}\n SERVER_URL:{}\n Restarting in {}s", lock.0.ssid, lock.0.server_url, i),
+                        0,
+                    )?;
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+                unsafe {
+                    esp_idf_svc::sys::esp_restart();
                 }
             }
-        } else {
-            tick = (tick + 1) % 2;
-            let crab = crab_img::crab_pixels();
+            Ok(bt_wifi_mode::BTevent::GoToOta) => {
+                for i in 1..=5 {
+                    lcd::display_text(
+                        &mut target,
+                        &format!("OTA is not yet supported.\n Restarting in {}s", i),
+                        0,
+                    )?;
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+            }
+            Err(e) => {
+                log::error!("Error receiving BLE event: {:?}", e);
+                for i in (1..=5).rev() {
+                    lcd::display_text(
+                        &mut target,
+                        &format!("Error receiving from BLE\n Restarting in {}s", i),
+                        0,
+                    )?;
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
 
-            match state {
-                State::Working => {
-                    framebuffer.clear(i2c::Color::Off)?;
-                    framebuffer.draw_iter(crab.into_iter().map(|mut p| {
-                        p.0.y += tick * 4;
-                        p
-                    }))?;
-                    i2c::lcd_display_text(&mut framebuffer, "Working")?;
-                    i2c::lcd_display_bitmap(&framebuffer)?;
-                }
-                State::Pending => {
-                    framebuffer.clear(i2c::Color::Off)?;
-                    framebuffer.draw_iter(crab.into_iter())?;
-                    i2c::lcd_display_text(&mut framebuffer, "Pending")?;
-                    i2c::lcd_display_bitmap(&framebuffer)?;
-                }
-                State::Stopped => {
-                    framebuffer.clear(i2c::Color::Off)?;
-                    framebuffer.draw_iter(crab.into_iter())?;
-                    i2c::lcd_display_text(&mut framebuffer, "Stopped")?;
-                    i2c::lcd_display_bitmap(&framebuffer)?;
-                }
-                State::OnlyDisplay => {
-                    // Do nothing
+                unsafe {
+                    esp_idf_svc::sys::esp_restart();
                 }
             }
         }
-    }
-}
 
-pub fn handle_key_event(
-    keyboard: &mut bt_keyboard::KeyboardAndMouse,
-    code: u8,
-    pressed: bool,
-) -> anyhow::Result<()> {
-    if pressed {
-        match code {
-            0 => {
-                keyboard.write("/compact\n");
-            }
-            1 => {}
-            2 => {
-                keyboard.press(b'\t');
-            }
-            3 => {
-                keyboard.press(0x1b); // ESC
-            }
-            4 => {
-                keyboard.write("retry\n");
-            }
-            5 => {
-                keyboard.shift_press(b'\t');
-            }
-            6 => {
-                keyboard.r_ctrl_press(0);
-            }
-            7 => {
-                keyboard.press(b'\n'); // Enter
-            }
-            18 => {}
-            _ => return Ok(()),
-        };
-    } else {
-        keyboard.release();
-    }
-
-    Ok(())
-}
-
-pub struct KeysMap {
-    pub key0: String,
-    pub key1: String,
-    pub key2: String,
-    pub key3: String,
-    pub key4: String,
-    pub key5: String,
-    pub key6: String,
-    pub key7: String,
-    pub key18: String,
-}
-
-impl KeysMap {
-    pub fn load_from_nvs(keys_map: &esp_idf_svc::nvs::EspDefaultNvs) -> anyhow::Result<Self> {
-        let mut s_buf = vec![0u8; 128];
-        fn read_str_from_nvs(
-            nvs: &esp_idf_svc::nvs::EspDefaultNvs,
-            key: &str,
-            buf: &mut Vec<u8>,
-        ) -> String {
-            nvs.get_str(key, buf)
-                .ok()
-                .flatten()
-                .unwrap_or_default()
-                .to_string()
+        unsafe {
+            esp_idf_svc::sys::esp_restart();
         }
-        let key0 = read_str_from_nvs(keys_map, "key0", &mut s_buf);
-        let key1 = read_str_from_nvs(keys_map, "key1", &mut s_buf);
-        let key2 = read_str_from_nvs(keys_map, "key2", &mut s_buf);
-        let key3 = read_str_from_nvs(keys_map, "key3", &mut s_buf);
-        let key4 = read_str_from_nvs(keys_map, "key4", &mut s_buf);
-        let key5 = read_str_from_nvs(keys_map, "key5", &mut s_buf);
-        let key6 = read_str_from_nvs(keys_map, "key6", &mut s_buf);
-        let key7 = read_str_from_nvs(keys_map, "key7", &mut s_buf);
-        let key18 = read_str_from_nvs(keys_map, "key18", &mut s_buf);
+    }
 
-        Ok(KeysMap {
-            key0,
-            key1,
-            key2,
-            key3,
-            key4,
-            key5,
-            key6,
-            key7,
-            key18,
+    log::info!("Displaying PNG image on LCD...");
+
+    lcd::display_png(
+        &mut target,
+        setting.background_png.0.as_slice(),
+        std::time::Duration::from_secs(2),
+    )?;
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    lcd::display_text(&mut target, "VibeKeys Ready", 0)?;
+
+    wifi::connect(&mut wifi, &setting.ssid, &setting.pass, sysloop.clone())?;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<app::Event>(64);
+
+    let worker = audio::AudioWorker {
+        in_i2s: peripherals.i2s0,
+        in_ws: peripherals.pins.gpio41.into(),
+        in_clk: peripherals.pins.gpio42.into(),
+        din: peripherals.pins.gpio40.into(),
+        in_mclk: None,
+    };
+
+    const AUDIO_STACK_SIZE: usize = 15 * 1024;
+
+    let audio_tx = tx.clone();
+    let _ = std::thread::Builder::new()
+        .stack_size(AUDIO_STACK_SIZE)
+        .spawn(move || {
+            log::info!(
+                "Starting audio worker thread in core {:?}",
+                esp_idf_svc::hal::cpu::core()
+            );
+            let r = worker.run(audio_tx);
+            if let Err(e) = r {
+                log::error!("Audio worker error: {:?}", e);
+            }
         })
+        .map_err(|e| anyhow::anyhow!("Failed to spawn audio worker thread: {:?}", e))?;
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    {
+        runtime.spawn(app::key_task::mic_key(btn0));
+
+        let btn2 = new_btn(
+            peripherals.pins.gpio2.into(),
+            esp_idf_svc::hal::gpio::Pull::Up,
+            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+        )?;
+
+        runtime.spawn(app::key_task::listen_key_event(
+            btn2,
+            tx.clone(),
+            app::Event::UltraThink,
+        ));
+
+        runtime.spawn(app::key_task::listen_key_event(
+            btn4,
+            tx.clone(),
+            app::Event::GUI,
+        ));
+
+        let btn5 = new_btn(
+            peripherals.pins.gpio5.into(),
+            esp_idf_svc::hal::gpio::Pull::Up,
+            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+        )?;
+
+        runtime.spawn(app::key_task::listen_key_event(
+            btn5,
+            tx.clone(),
+            app::Event::SwtchMode,
+        ));
+
+        let btn6 = new_btn(
+            peripherals.pins.gpio6.into(),
+            esp_idf_svc::hal::gpio::Pull::Up,
+            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+        )?;
+        runtime.spawn(app::key_task::backspace_key(btn6, tx.clone()));
+
+        let btn3 = new_btn(
+            peripherals.pins.gpio3.into(),
+            esp_idf_svc::hal::gpio::Pull::Up,
+            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+        )?;
+
+        runtime.spawn(app::key_task::esc_key(btn3, tx.clone()));
+
+        let btn7 = new_btn(
+            peripherals.pins.gpio7.into(),
+            esp_idf_svc::hal::gpio::Pull::Up,
+            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+        )?;
+
+        runtime.spawn(app::key_task::accept_key(btn7, tx.clone()));
+
+        let pin16 = new_btn(
+            peripherals.pins.gpio16.into(),
+            esp_idf_svc::hal::gpio::Pull::Up,
+            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+        )?;
+        let pin17 = new_btn(
+            peripherals.pins.gpio17.into(),
+            esp_idf_svc::hal::gpio::Pull::Up,
+            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+        )?;
+
+        runtime.spawn(app::key_task::rotate_key(pin16, pin17, tx.clone()));
+
+        let pin18 = new_btn(
+            peripherals.pins.gpio18.into(),
+            esp_idf_svc::hal::gpio::Pull::Up,
+            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+        )?;
+
+        runtime.spawn(app::key_task::rotate_push_key(pin18, tx.clone()));
     }
 
-    pub fn apply_to_keyboard(
-        &self,
-        keyboard: &mut bt_keyboard::KeyboardAndMouse,
-        code: u8,
-        pressed: bool,
-    ) -> anyhow::Result<()> {
-        if pressed {
-            match code {
-                0 => {
-                    keyboard.write("/compact");
-                    &self.key0
-                }
-                1 => &self.key1,
-                2 => {
-                    keyboard.shift_press(b'\t');
-                    &self.key2
-                }
-                3 => {
-                    keyboard.press(0); // ESC
-                    &self.key3
-                }
-                4 => {
-                    keyboard.write("retry");
-                    &self.key4
-                }
-                5 => &self.key5,
-                6 => &self.key6,
-                7 => {
-                    keyboard.press(b'\n'); // Enter
-                    &self.key7
-                }
-                18 => &self.key18,
-                _ => return Ok(()),
-            };
-        } else {
-            keyboard.release();
-        }
+    let mut ui = lcd::UI::new_with_target(target);
 
-        Ok(())
+    let app_fut = app::run(setting.server_url, &mut ui, rx);
+    let r = runtime.block_on(app_fut);
+    if let Err(e) = r {
+        log::error!("App error: {:?}", e);
+    } else {
+        log::info!("App exited successfully");
     }
-}
-
-fn start_lcd(
-    i2c: I2C0,
-    sda: esp_idf_svc::hal::gpio::Gpio48,
-    scl: esp_idf_svc::hal::gpio::Gpio45,
-) -> anyhow::Result<()> {
-    i2c::i2c_init(i2c, sda, scl)?;
-
-    i2c::init_i2c_lcd()?;
 
     Ok(())
+}
+
+pub fn log_heap() {
+    unsafe {
+        use esp_idf_svc::sys::{heap_caps_get_free_size, MALLOC_CAP_INTERNAL, MALLOC_CAP_SPIRAM};
+
+        log::info!(
+            "Free SPIRAM heap size: {}KB",
+            heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024
+        );
+        log::info!(
+            "Free INTERNAL heap size: {}KB",
+            heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024
+        );
+    }
 }
