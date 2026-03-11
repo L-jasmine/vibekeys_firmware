@@ -305,10 +305,14 @@ pub mod key_task {
                 return Err(anyhow::anyhow!("Failed to wait for mic button edge"));
             }
 
+            if !btn.is_low() {
+                continue;
+            }
+
             let r = crate::audio::MIC_ON.fetch_not(std::sync::atomic::Ordering::Relaxed);
             log::info!("Button pressed, mic state changed to: {}", !r);
 
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
     }
 
@@ -329,6 +333,10 @@ pub mod key_task {
             if let Err(e) = btn.wait_for_falling_edge().await {
                 log::error!("Button interrupt error: {:?}", e);
                 return Err(anyhow::anyhow!("Failed to wait for button K{port} edge"));
+            }
+
+            if !btn.is_low() {
+                continue;
             }
 
             log::info!("Button K{port} pressed");
