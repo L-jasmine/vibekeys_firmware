@@ -159,12 +159,20 @@ fn main() -> anyhow::Result<()> {
 
     log::info!("Displaying PNG image on LCD...");
 
-    lcd::display_png(
-        &mut target,
-        setting.background_png.0.as_slice(),
-        std::time::Duration::from_secs(2),
-    )?;
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    if setting.background_png.0.is_empty() {
+        log::info!("No background PNG found in settings, using default.");
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    } else {
+        log::info!(
+            "Background PNG found in settings, size: {} bytes",
+            setting.background_png.0.len()
+        );
+        lcd::display_png(
+            &mut target,
+            setting.background_png.0.as_slice(),
+            std::time::Duration::from_secs(2),
+        )?;
+    }
 
     lcd::display_text(&mut target, "VibeKeys Ready", 0)?;
 

@@ -335,7 +335,7 @@ impl DisplayTargetDrive for FrameBuffer {
     }
 }
 
-pub const DEFAULT_BACKGROUND: &[u8] = include_bytes!("../assets/lm_320x240.png");
+pub const DEFAULT_BACKGROUND: &[u8] = &[];
 
 pub fn display_png<D: DisplayTargetDrive>(
     display_target: &mut D,
