@@ -63,10 +63,21 @@ pub async fn run(
     ui: &mut crate::lcd::UI,
     mut rx: crate::audio::EventRx,
 ) -> anyhow::Result<()> {
-    let mut server = crate::ws::Server::new(uri).await?;
+    let server = crate::ws::Server::new(uri).await;
+    if server.is_err() {
+        log::error!("Server connection failed:\n{:?}", server.err());
+        ui.show_notification(ColorFormat::CSS_DARK_RED, "Failed to connect to server")?;
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        return Err(anyhow::anyhow!("Failed to connect to server"));
+    }
+
+    let mut server = server.unwrap();
     let mut start_submit_audio = false;
 
-    ui.show_notification(ColorFormat::CSS_DARK_GREEN, "Server Connected")?;
+    ui.show_notification(
+        ColorFormat::CSS_DARK_GREEN,
+        "Server Connected\nPress Voice Key to start talking",
+    )?;
     ui.start_input("Ready for input")?;
 
     while let Some(evt) = select_event(&mut server, &mut rx).await {

@@ -174,9 +174,17 @@ fn main() -> anyhow::Result<()> {
         )?;
     }
 
-    lcd::display_text(&mut target, "VibeKeys Ready", 0)?;
+    lcd::display_text(&mut target, "Connecting the server and WiFi...", 0)?;
 
-    wifi::connect(&mut wifi, &setting.ssid, &setting.pass, sysloop.clone())?;
+    let r = wifi::connect(&mut wifi, &setting.ssid, &setting.pass, sysloop.clone());
+    if r.is_err() {
+        log::error!("Failed to connect to WiFi: {:?}", r.err());
+        lcd::display_text(&mut target, " WiFi connection failed\n", 0)?;
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        unsafe {
+            esp_idf_svc::sys::esp_restart();
+        }
+    }
 
     let (tx, rx) = tokio::sync::mpsc::channel::<app::Event>(64);
 
@@ -297,7 +305,9 @@ fn main() -> anyhow::Result<()> {
         log::info!("App exited successfully");
     }
 
-    Ok(())
+    unsafe {
+        esp_idf_svc::sys::esp_restart();
+    }
 }
 
 pub fn log_heap() {
