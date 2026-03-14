@@ -754,6 +754,7 @@ impl UI {
         if let UiState::ShowingNotification { color, .. } = &mut self.state {
             *color = ColorFormat::new(255, 150, 0); // 切换到输入模式，先把通知颜色改为橙色
             self.waiting_input_prompt = prompt.to_string();
+            self.refresh_notification()?;
             return Ok(()); // 正在显示通知，先保存输入提示，等刷新时再切换到输入模式
         }
 
@@ -1162,6 +1163,9 @@ impl UI {
                 Size::new(bounding_box.size.width, LINE_HEIGHT as u32),
             );
             top_bar.draw_styled(&PrimitiveStyle::with_fill(color), &mut self.display)?;
+            if !self.waiting_input_prompt.is_empty() {
+                self.draw_text("● Waiting for next step", Point::new(4, 2), color, true)?;
+            }
 
             let status_bar_str = self.status_bar.clone();
 
