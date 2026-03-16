@@ -221,11 +221,9 @@ impl lcd::UI {
                 }
             }
             Event::Esc => {
-                if self.is_confirm_dialog() {
-                    server
-                        .send(protocol::ClientMessage::pty_input(b"\x1b".to_vec()))
-                        .await?;
-                }
+                server
+                    .send(protocol::ClientMessage::pty_input(b"\x1b".to_vec()))
+                    .await?;
             }
             _ => {
                 log::warn!("Unexpected event in ChoiceSelection state");
