@@ -236,7 +236,7 @@ impl lcd::UI {
     async fn handle_key_event_on_displaying_text(
         &mut self,
         evt: Event,
-        _server: &mut crate::ws::Server,
+        server: &mut crate::ws::Server,
     ) -> anyhow::Result<()> {
         match evt {
             Event::RotateDown => {
@@ -250,6 +250,12 @@ impl lcd::UI {
             }
             Event::Accept => {
                 self.scroll_up()?;
+            }
+            Event::SwtchMode => {
+                // shift + tab
+                server
+                    .send(protocol::ClientMessage::PtyInput(b"\x1b[Z".to_vec()))
+                    .await?;
             }
             _ => {
                 log::warn!("Unexpected event in DisplayingText state");
