@@ -221,6 +221,11 @@ impl lcd::UI {
                 self.reset_scroll()?;
             }
             Event::GUI => self.next_choice()?,
+            Event::Backspace => {
+                if self.allow_input() {
+                    self.remove_input_char()?;
+                }
+            }
             Event::Accept => {
                 if self.is_confirm_dialog() {
                     server
