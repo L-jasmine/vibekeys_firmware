@@ -138,7 +138,7 @@ pub async fn run(
             }
             SelectResult::ServerMessage(msg) => match msg {
                 protocol::ServerMessage::PtyOutput(..) => {
-                    log::debug!("Received PTY output, ignoring for now");
+                    log::trace!("Received PTY output, ignoring for now");
                     continue;
                 }
                 msg => {
