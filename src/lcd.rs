@@ -1195,7 +1195,7 @@ impl UI {
             for (i, option) in options.iter().enumerate() {
                 if i as i32 == selected_index {
                     // 选中项：蓝色背景，白色文字
-                    display_text.push_str(&format!("\x1b[44;37m[ {} ]\x1b[49m\n", option));
+                    display_text.push_str(&format!("\x1b[44;97m[ {} ]\x1b[49m\n", option));
                 } else {
                     // 未选中项：普通文字
                     display_text.push_str(&format!(" {}\n", option));
@@ -1203,8 +1203,8 @@ impl UI {
             }
         } else {
             // Confirm/Cancel 固定显示
-            display_text.push_str("\x1b[44;37m[ Confirm ([Accept]) ]\x1b[49m\n");
-            display_text.push_str("Cancel ([ESC])\n");
+            display_text.push_str("\n\x1b[44m[Accept] Confirm\x1b[0m\t\t\t");
+            display_text.push_str("\x1b[41m[ESC] Cancel\x1b[0m\n");
         }
 
         const LINE_HEIGHT: i32 = 14;
