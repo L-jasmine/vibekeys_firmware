@@ -121,6 +121,10 @@ pub async fn run(
                                 ui.handle_key_event_on_choice_selection(evt, &mut server)
                                     .await?;
                             }
+                            &lcd::UiState::WaitingChoiceAllowCustom { .. } => {
+                                ui.handle_key_event_on_choice_selection(evt, &mut server)
+                                    .await?;
+                            }
                             lcd::UiState::ShowingNotification { .. } => {
                                 ui.handle_key_event_on_displaying_text(evt, &mut server)
                                     .await?;
@@ -200,10 +204,18 @@ impl lcd::UI {
     ) -> anyhow::Result<()> {
         match evt {
             Event::RotateDown => {
-                self.scroll_down()?;
+                if self.allow_input() {
+                    self.move_cursor_right()?;
+                } else {
+                    self.scroll_down()?;
+                }
             }
             Event::RotateUp => {
-                self.scroll_up()?;
+                if self.allow_input() {
+                    self.move_cursor_left()?;
+                } else {
+                    self.scroll_up()?;
+                }
             }
             Event::RotatePush => {
                 self.reset_scroll()?;
@@ -215,15 +227,22 @@ impl lcd::UI {
                         .send(protocol::ClientMessage::pty_input(b"\r".to_vec()))
                         .await?;
                 } else {
-                    let choice = self.confirm_choice().unwrap_or(0);
-                    log::info!("Selected choice index: {}", choice);
-                    server.send(protocol::ClientMessage::choice(choice)).await?;
+                    if let Some(choice) = self.confirm_choice() {
+                        server.send(choice).await?;
+                        log::info!("Confirmed choice, sent to server");
+                    } else {
+                        log::debug!("No choice selected, ignoring accept event");
+                    }
                 }
             }
             Event::Esc => {
-                server
-                    .send(protocol::ClientMessage::pty_input(b"\x1b".to_vec()))
-                    .await?;
+                if !self.allow_input() {
+                    server
+                        .send(protocol::ClientMessage::pty_input(b"\x1b".to_vec()))
+                        .await?;
+                } else {
+                    self.clear_input()?;
+                }
             }
             _ => {
                 log::warn!("Unexpected event in ChoiceSelection state");
