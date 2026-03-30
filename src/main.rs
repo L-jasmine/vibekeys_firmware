@@ -260,9 +260,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        unsafe {
-            esp_idf_svc::sys::esp_restart();
-        }
+        esp_idf_svc::hal::reset::restart();
     }
 
     log::info!("Displaying PNG image on LCD...");
@@ -292,59 +290,7 @@ fn main() -> anyhow::Result<()> {
         ota.mark_running_slot_valid()?;
     }
 
-    lcd::display_text(&mut target, "Connecting the WiFi...", 0)?;
-
-    let r = wifi::connect(&mut wifi, &setting.ssid, &setting.pass, sysloop.clone());
-    if r.is_err() {
-        log::error!("Failed to connect to WiFi: {:?}", r.err());
-        lcd::display_text(&mut target, " WiFi connection failed\n", 0)?;
-        std::thread::sleep(std::time::Duration::from_secs(60));
-        unsafe {
-            esp_idf_svc::sys::esp_restart();
-        }
-    }
-
-    if setting.server_url.starts_with("wss") {
-        lcd::display_text(&mut target, "Syncing time...", 0)?;
-        let r = sync_time(&mut target);
-        if r.is_err() {
-            log::error!("Failed to sync time: {:?}", r.err());
-            lcd::display_text(&mut target, " Time sync failed\n", 0)?;
-            std::thread::sleep(std::time::Duration::from_secs(60));
-            unsafe {
-                esp_idf_svc::sys::esp_restart();
-            }
-        }
-    }
-
     let (tx, rx) = tokio::sync::mpsc::channel::<app::Event>(64);
-
-    let worker = audio::AudioWorker {
-        in_i2s: peripherals.i2s0,
-        in_ws: peripherals.pins.gpio41.into(),
-        in_clk: peripherals.pins.gpio42.into(),
-        din: peripherals.pins.gpio40.into(),
-        in_mclk: None,
-    };
-
-    const AUDIO_STACK_SIZE: usize = 15 * 1024;
-
-    let audio_tx = tx.clone();
-    let _ = std::thread::Builder::new()
-        .stack_size(AUDIO_STACK_SIZE)
-        .spawn(move || {
-            log::info!(
-                "Starting audio worker thread in core {:?}",
-                esp_idf_svc::hal::cpu::core()
-            );
-            let r = worker.run(audio_tx);
-            if let Err(e) = r {
-                log::error!("Audio worker error: {:?}", e);
-            }
-        })
-        .map_err(|e| anyhow::anyhow!("Failed to spawn audio worker thread: {:?}", e))?;
-
-    _ = rustls_rustcrypto::provider().install_default();
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -381,6 +327,57 @@ fn main() -> anyhow::Result<()> {
 
         runtime.spawn(app::key_task::rotate_push_key(pin18, tx.clone()));
     }
+
+    lcd::display_text(&mut target, "Connecting the WiFi...", 0)?;
+
+    let r = wifi::connect(&mut wifi, &setting.ssid, &setting.pass, sysloop.clone());
+    if r.is_err() {
+        log::error!("Failed to connect to WiFi: {:?}", r.err());
+        lcd::display_text(&mut target, " WiFi connection failed\n", 0)?;
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        unsafe {
+            esp_idf_svc::sys::esp_restart();
+        }
+    }
+
+    if setting.server_url.starts_with("wss") {
+        _ = rustls_rustcrypto::provider().install_default();
+        lcd::display_text(&mut target, "Syncing time...", 0)?;
+        let r = sync_time(&mut target);
+        if r.is_err() {
+            log::error!("Failed to sync time: {:?}", r.err());
+            lcd::display_text(&mut target, " Time sync failed\n", 0)?;
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            unsafe {
+                esp_idf_svc::sys::esp_restart();
+            }
+        }
+    }
+
+    let worker = audio::AudioWorker {
+        in_i2s: peripherals.i2s0,
+        in_ws: peripherals.pins.gpio41.into(),
+        in_clk: peripherals.pins.gpio42.into(),
+        din: peripherals.pins.gpio40.into(),
+        in_mclk: None,
+    };
+
+    const AUDIO_STACK_SIZE: usize = 15 * 1024;
+
+    let audio_tx = tx.clone();
+    let _ = std::thread::Builder::new()
+        .stack_size(AUDIO_STACK_SIZE)
+        .spawn(move || {
+            log::info!(
+                "Starting audio worker thread in core {:?}",
+                esp_idf_svc::hal::cpu::core()
+            );
+            let r = worker.run(audio_tx);
+            if let Err(e) = r {
+                log::error!("Audio worker error: {:?}", e);
+            }
+        })
+        .map_err(|e| anyhow::anyhow!("Failed to spawn audio worker thread: {:?}", e))?;
 
     lcd::display_text(&mut target, "Connecting the Server...", 0)?;
 
