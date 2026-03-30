@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<!-- VibeKeys Setup Page (Copy from https://github.com/second-state/vibekeys_firmware) -->
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VibeKeys OTA</title>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+</head>
+
+<body class="bg-base-200 min-h-screen py-8 bg-cover bg-center bg-no-repeat bg-fixed">
+
+    <div class="container mx-auto px-4 max-w-2xl">
+        <div class="text-center mb-8">
+            <h1 class="text-4xl font-bold mb-2">VibeKeys OTA</h1>
+            <p class="text-base-content/70">Upload firmware file to update your device</p>
+        </div>
+
+        <div class="card bg-base-100 shadow-xl">
+            <div class="card-body">
+                <!-- Drag & Drop Zone -->
+                <div
+                    id="dropZone"
+                    class="border-2 border-dashed border-base-300 rounded-lg p-8 text-center cursor-pointer hover:border-primary hover:bg-base-200 transition-all"
+                >
+                    <input type="file" id="fileInput" class="hidden" accept=".bin">
+                    <div id="dropContent">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-16 w-16 mx-auto mb-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                        </svg>
+                        <p class="text-lg mb-2">Drag & drop firmware file here</p>
+                        <p class="text-sm text-base-content/50">or click to browse</p>
+                    </div>
+                    <div id="fileInfo" class="hidden">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-16 w-16 mx-auto mb-4 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        <p class="text-lg font-semibold" id="fileName"></p>
+                        <p class="text-sm text-base-content/50" id="fileSize"></p>
+                    </div>
+                </div>
+
+                <!-- Progress Bar -->
+                <div id="progressContainer" class="hidden mt-6">
+                    <div class="flex justify-between mb-2">
+                        <span class="text-sm">Uploading...</span>
+                        <span class="text-sm" id="progressPercent">0%</span>
+                    </div>
+                    <progress id="progressBar" class="progress progress-primary w-full" value="0" max="100"></progress>
+                </div>
+
+                <!-- Status Message -->
+                <div id="statusMessage" class="hidden mt-4">
+                    <div id="statusContent" class="alert"></div>
+                </div>
+
+                <!-- Start OTA Button -->
+                <div class="card-actions justify-end mt-6">
+                    <button id="startOtaBtn" class="btn btn-primary" disabled>
+                        Start OTA
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const dropContent = document.getElementById('dropContent');
+        const fileInfo = document.getElementById('fileInfo');
+        const fileName = document.getElementById('fileName');
+        const fileSize = document.getElementById('fileSize');
+        const startOtaBtn = document.getElementById('startOtaBtn');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressBar = document.getElementById('progressBar');
+        const progressPercent = document.getElementById('progressPercent');
+        const statusMessage = document.getElementById('statusMessage');
+        const statusContent = document.getElementById('statusContent');
+
+        let selectedFile = null;
+
+        // Click to browse
+        dropZone.addEventListener('click', () => fileInput.click());
+
+        // File input change
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFile(e.target.files[0]);
+            }
+        });
+
+        // Drag and drop events
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('border-primary', 'bg-base-200');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('border-primary', 'bg-base-200');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('border-primary', 'bg-base-200');
+            if (e.dataTransfer.files.length > 0) {
+                handleFile(e.dataTransfer.files[0]);
+            }
+        });
+
+        function handleFile(file) {
+            selectedFile = file;
+            dropContent.classList.add('hidden');
+            fileInfo.classList.remove('hidden');
+            fileName.textContent = file.name;
+            fileSize.textContent = formatFileSize(file.size);
+            startOtaBtn.disabled = false;
+            hideStatus();
+        }
+
+        function formatFileSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+        }
+
+        // Start OTA
+        startOtaBtn.addEventListener('click', async () => {
+            if (!selectedFile) return;
+
+            startOtaBtn.disabled = true;
+            progressContainer.classList.remove('hidden');
+            hideStatus();
+
+            try {
+                const formData = new FormData();
+                formData.append('file', selectedFile);
+
+                const xhr = new XMLHttpRequest();
+
+                xhr.upload.addEventListener('progress', (e) => {
+                    if (e.lengthComputable) {
+                        const percent = Math.round((e.loaded / e.total) * 100);
+                        progressBar.value = percent;
+                        progressPercent.textContent = percent + '%';
+                    }
+                });
+
+                xhr.addEventListener('load', () => {
+                    if (xhr.status === 200) {
+                        showStatus('success', 'OTA update completed successfully!');
+                        resetForm();
+                    } else {
+                        showStatus('error', `Upload failed: ${xhr.statusText}`);
+                        startOtaBtn.disabled = false;
+                    }
+                });
+
+                xhr.addEventListener('error', () => {
+                    showStatus('error', 'Network error during upload');
+                    startOtaBtn.disabled = false;
+                });
+
+                xhr.open('PUT', '/ota');
+                xhr.send(selectedFile);
+
+            } catch (error) {
+                showStatus('error', `Error: ${error.message}`);
+                startOtaBtn.disabled = false;
+            }
+        });
+
+        function showStatus(type, message) {
+            statusMessage.classList.remove('hidden');
+            statusContent.className = `alert alert-${type}`;
+            statusContent.textContent = message;
+        }
+
+        function hideStatus() {
+            statusMessage.classList.add('hidden');
+        }
+
+        function resetForm() {
+            selectedFile = null;
+            fileInput.value = '';
+            dropContent.classList.remove('hidden');
+            fileInfo.classList.add('hidden');
+            progressContainer.classList.add('hidden');
+            progressBar.value = 0;
+            progressPercent.textContent = '0%';
+            startOtaBtn.disabled = false;
+        }
+    </script>
+
+</body>
+
+</html>
