@@ -93,12 +93,6 @@ fn main() -> anyhow::Result<()> {
     // let mut backlight = lcd::backlight_init(peripherals.pins.gpio11.into())?;
     // lcd::set_backlight(&mut backlight, 40).unwrap();
 
-    let btn0 = new_btn(
-        peripherals.pins.gpio0.into(),
-        esp_idf_svc::hal::gpio::Pull::Up,
-        esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
-    )?;
-
     log_heap();
 
     lcd::init_spi(
@@ -117,21 +111,72 @@ fn main() -> anyhow::Result<()> {
     target.flush()?;
     lcd::display_text(&mut target, "VibeKeys Starting...\n Read setting", 0)?;
 
-    let mut wifi = esp_idf_svc::wifi::EspWifi::new(peripherals.modem, sysloop.clone(), None)?;
-    let mac = wifi.sta_netif().get_mac().unwrap();
-    let dev_id = format!(
-        "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
-    );
+    // MIC
+    let btn0 = new_btn(
+        peripherals.pins.gpio0.into(),
+        esp_idf_svc::hal::gpio::Pull::Up,
+        esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+    )?;
 
+    // GUI (claude)
     let btn4 = new_btn(
         peripherals.pins.gpio4.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
     )?;
 
+    // ESC
     let btn3 = new_btn(
         peripherals.pins.gpio3.into(),
+        esp_idf_svc::hal::gpio::Pull::Up,
+        esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+    )?;
+
+    // UltraThink
+    let btn2 = new_btn(
+        peripherals.pins.gpio2.into(),
+        esp_idf_svc::hal::gpio::Pull::Up,
+        esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+    )?;
+
+    // Switch Mode
+    let btn5 = new_btn(
+        peripherals.pins.gpio5.into(),
+        esp_idf_svc::hal::gpio::Pull::Up,
+        esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+    )?;
+
+    // Backspace
+    let btn6 = new_btn(
+        peripherals.pins.gpio6.into(),
+        esp_idf_svc::hal::gpio::Pull::Up,
+        esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+    )?;
+
+    // Accept
+    let btn7 = new_btn(
+        peripherals.pins.gpio7.into(),
+        esp_idf_svc::hal::gpio::Pull::Up,
+        esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+    )?;
+
+    // Rotate A
+    let pin16 = new_btn(
+        peripherals.pins.gpio16.into(),
+        esp_idf_svc::hal::gpio::Pull::Up,
+        esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+    )?;
+
+    // Rotate B
+    let pin17 = new_btn(
+        peripherals.pins.gpio17.into(),
+        esp_idf_svc::hal::gpio::Pull::Up,
+        esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+    )?;
+
+    // Rotate Push
+    let pin18 = new_btn(
+        peripherals.pins.gpio18.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
     )?;
@@ -139,6 +184,13 @@ fn main() -> anyhow::Result<()> {
     let nvs = esp_idf_svc::nvs::EspDefaultNvs::new(partition, "setting", true)?;
 
     let mut setting = bt_wifi_mode::Setting::load_from_nvs(&nvs)?;
+
+    let mut wifi = esp_idf_svc::wifi::EspWifi::new(peripherals.modem, sysloop.clone(), None)?;
+    let mac = wifi.sta_netif().get_mac().unwrap();
+    let dev_id = format!(
+        "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+    );
 
     if btn4.is_low() || setting.need_init() {
         esp32_nimble::BLEDevice::set_device_name("VibeKeys-MAX")?;
@@ -301,12 +353,6 @@ fn main() -> anyhow::Result<()> {
     {
         runtime.spawn(app::key_task::mic_key(btn0, setting.mic_model.into()));
 
-        let btn2 = new_btn(
-            peripherals.pins.gpio2.into(),
-            esp_idf_svc::hal::gpio::Pull::Up,
-            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
-        )?;
-
         runtime.spawn(app::key_task::listen_key_event(
             btn2,
             tx.clone(),
@@ -319,53 +365,19 @@ fn main() -> anyhow::Result<()> {
             app::Event::GUI,
         ));
 
-        let btn5 = new_btn(
-            peripherals.pins.gpio5.into(),
-            esp_idf_svc::hal::gpio::Pull::Up,
-            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
-        )?;
-
         runtime.spawn(app::key_task::listen_key_event(
             btn5,
             tx.clone(),
             app::Event::SwtchMode,
         ));
 
-        let btn6 = new_btn(
-            peripherals.pins.gpio6.into(),
-            esp_idf_svc::hal::gpio::Pull::Up,
-            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
-        )?;
         runtime.spawn(app::key_task::backspace_key(btn6, tx.clone()));
 
         runtime.spawn(app::key_task::esc_key(btn3, tx.clone()));
 
-        let btn7 = new_btn(
-            peripherals.pins.gpio7.into(),
-            esp_idf_svc::hal::gpio::Pull::Up,
-            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
-        )?;
-
         runtime.spawn(app::key_task::accept_key(btn7, tx.clone()));
 
-        let pin16 = new_btn(
-            peripherals.pins.gpio16.into(),
-            esp_idf_svc::hal::gpio::Pull::Up,
-            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
-        )?;
-        let pin17 = new_btn(
-            peripherals.pins.gpio17.into(),
-            esp_idf_svc::hal::gpio::Pull::Up,
-            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
-        )?;
-
         runtime.spawn(app::key_task::rotate_key(pin16, pin17, tx.clone()));
-
-        let pin18 = new_btn(
-            peripherals.pins.gpio18.into(),
-            esp_idf_svc::hal::gpio::Pull::Up,
-            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
-        )?;
 
         runtime.spawn(app::key_task::rotate_push_key(pin18, tx.clone()));
     }
