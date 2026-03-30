@@ -29,26 +29,43 @@ fn new_btn(
     Ok(btn)
 }
 
-pub fn sync_time() -> anyhow::Result<()> {
-    use esp_idf_svc::sntp::{EspSntp, OperatingMode, SntpConf, SyncMode, SyncStatus};
-    log::info!("SNTP sync time");
-    let conf = SntpConf {
-        servers: ["time.windows.com"],
-        operating_mode: OperatingMode::Poll,
-        sync_mode: SyncMode::Immediate,
-    };
-    let ntp_client = EspSntp::new(&conf)?;
+const DEFAULT_SNTP_SERVERS: [&str; 4] = [
+    "pool.ntp.org",
+    "time.apple.com",
+    "time.windows.com",
+    "time.google.com",
+];
 
-    loop {
-        let status = ntp_client.get_sync_status();
-        log::info!("sntp sync status {:?}", status);
-        if status == SyncStatus::Completed {
-            break;
+pub fn sync_time(display_target: &mut lcd::FrameBuffer) -> anyhow::Result<()> {
+    use esp_idf_svc::sntp::{EspSntp, OperatingMode, SntpConf, SyncMode, SyncStatus};
+
+    for i in 0..DEFAULT_SNTP_SERVERS.len() {
+        log::info!("SNTP sync time with server: {}", DEFAULT_SNTP_SERVERS[i]);
+        lcd::display_text(
+            display_target,
+            &format!("Syncing time with {}", DEFAULT_SNTP_SERVERS[i]),
+            0,
+        )?;
+
+        let conf = SntpConf {
+            servers: [DEFAULT_SNTP_SERVERS[i]],
+            operating_mode: OperatingMode::Poll,
+            sync_mode: SyncMode::Immediate,
+        };
+        let ntp_client = EspSntp::new(&conf)?;
+
+        for _ in 0..30 {
+            let status = ntp_client.get_sync_status();
+            log::info!("sntp sync status {:?}", status);
+            if status == SyncStatus::Completed {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        log::info!("SNTP synchronized!");
     }
-    log::info!("SNTP synchronized!");
-    Ok(())
+
+    Err(anyhow::anyhow!("Failed to sync time with all SNTP servers"))
 }
 
 pub fn goto_next_firmware() -> anyhow::Result<()> {
@@ -235,15 +252,16 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    lcd::display_text(&mut target, "Syncing time...", 0)?;
-
-    let r = sync_time();
-    if r.is_err() {
-        log::error!("Failed to sync time: {:?}", r.err());
-        lcd::display_text(&mut target, " Time sync failed\n", 0)?;
-        std::thread::sleep(std::time::Duration::from_secs(60));
-        unsafe {
-            esp_idf_svc::sys::esp_restart();
+    if setting.server_url.starts_with("wss") {
+        lcd::display_text(&mut target, "Syncing time...", 0)?;
+        let r = sync_time(&mut target);
+        if r.is_err() {
+            log::error!("Failed to sync time: {:?}", r.err());
+            lcd::display_text(&mut target, " Time sync failed\n", 0)?;
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            unsafe {
+                esp_idf_svc::sys::esp_restart();
+            }
         }
     }
 
