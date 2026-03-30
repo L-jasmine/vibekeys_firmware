@@ -93,12 +93,6 @@ fn main() -> anyhow::Result<()> {
     // let mut backlight = lcd::backlight_init(peripherals.pins.gpio11.into())?;
     // lcd::set_backlight(&mut backlight, 40).unwrap();
 
-    let btn0 = new_btn(
-        peripherals.pins.gpio0.into(),
-        esp_idf_svc::hal::gpio::Pull::Up,
-        esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
-    )?;
-
     log_heap();
 
     lcd::init_spi(
@@ -117,21 +111,72 @@ fn main() -> anyhow::Result<()> {
     target.flush()?;
     lcd::display_text(&mut target, "VibeKeys Starting...\n Read setting", 0)?;
 
-    let mut wifi = esp_idf_svc::wifi::EspWifi::new(peripherals.modem, sysloop.clone(), None)?;
-    let mac = wifi.sta_netif().get_mac().unwrap();
-    let dev_id = format!(
-        "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
-    );
+    // MIC
+    let btn0 = new_btn(
+        peripherals.pins.gpio0.into(),
+        esp_idf_svc::hal::gpio::Pull::Up,
+        esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+    )?;
 
-    let btn4 = new_btn(
+    // GUI (claude)
+    let mut btn4 = new_btn(
         peripherals.pins.gpio4.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
     )?;
 
-    let btn3 = new_btn(
+    // ESC
+    let mut btn3 = new_btn(
         peripherals.pins.gpio3.into(),
+        esp_idf_svc::hal::gpio::Pull::Up,
+        esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+    )?;
+
+    // UltraThink
+    let btn2 = new_btn(
+        peripherals.pins.gpio2.into(),
+        esp_idf_svc::hal::gpio::Pull::Up,
+        esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+    )?;
+
+    // Switch Mode
+    let btn5 = new_btn(
+        peripherals.pins.gpio5.into(),
+        esp_idf_svc::hal::gpio::Pull::Up,
+        esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+    )?;
+
+    // Backspace
+    let btn6 = new_btn(
+        peripherals.pins.gpio6.into(),
+        esp_idf_svc::hal::gpio::Pull::Up,
+        esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+    )?;
+
+    // Accept
+    let mut btn7 = new_btn(
+        peripherals.pins.gpio7.into(),
+        esp_idf_svc::hal::gpio::Pull::Up,
+        esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+    )?;
+
+    // Rotate A
+    let pin16 = new_btn(
+        peripherals.pins.gpio16.into(),
+        esp_idf_svc::hal::gpio::Pull::Up,
+        esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+    )?;
+
+    // Rotate B
+    let pin17 = new_btn(
+        peripherals.pins.gpio17.into(),
+        esp_idf_svc::hal::gpio::Pull::Up,
+        esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
+    )?;
+
+    // Rotate Push
+    let pin18 = new_btn(
+        peripherals.pins.gpio18.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
     )?;
@@ -140,7 +185,100 @@ fn main() -> anyhow::Result<()> {
 
     let mut setting = bt_wifi_mode::Setting::load_from_nvs(&nvs)?;
 
-    if btn4.is_low() || setting.need_init() {
+    let mut wifi = esp_idf_svc::wifi::EspWifi::new(peripherals.modem, sysloop.clone(), None)?;
+    let mac = wifi.sta_netif().get_mac().unwrap();
+    let dev_id = format!(
+        "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+    );
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let mut mode = 3;
+
+    for i in 0..5 {
+        lcd::display_text(&mut target, format!(" <ESC> -> OTA mode\n <Claude> -> Setting mode\n <Accept> -> Remote Control mode\n{}s later enter Keyboard mode", 5-i).as_str(), 0).unwrap();
+
+        mode = runtime.block_on(async {
+            tokio::select! {
+                _ = btn3.wait_for_low() => {
+                    log::info!("Button ESC is pressed, Goto ota mode");
+                    0
+                },
+                _ = btn7.wait_for_low() => {
+                    log::info!("Button Accept is pressed, Starting in Remote Control mode");
+                    1
+                },
+                _ = btn4.wait_for_low() => {
+                    log::info!("Button Setting is pressed, Starting in setting mode");
+                    2
+                },
+                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                    log::info!("No button is pressed, Starting in normal mode");
+                    3
+                }
+            }
+        });
+        if mode != 3 {
+            break;
+        }
+    }
+
+    if mode == 0 {
+        log::info!("Button ESC is pressed, Goto ota mode");
+        lcd::display_text(&mut target, "Entering OTA mode...", 0)?;
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        goto_next_firmware()?;
+    } else {
+        let mut ota = esp_idf_svc::ota::EspOta::new()?;
+        ota.mark_running_slot_valid()?;
+    }
+
+    if mode == 3 {
+        lcd::display_text(&mut target, "Starting in keyboard mode...", 0)?;
+        std::thread::sleep(std::time::Duration::from_secs(1));
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+
+        esp32_nimble::BLEDevice::set_device_name("VibeKeys-MAX")?;
+
+        let ble_device = esp32_nimble::BLEDevice::take();
+        let mut keyboard = bt_keyboard_mode::KeyboardAndMouse::new(ble_device, 100)?;
+        let _controller_service = bt_keyboard_mode::new_controller_service(ble_device, tx)?;
+
+        let server = ble_device.get_server();
+        server.start()?;
+        bt_keyboard_mode::start_ble_advertising(ble_device, keyboard.hid_service_id())?;
+
+        let mut key_pins = bt_keyboard_mode::KeysPin {
+            mic: btn0,
+            ultrathink: btn2,
+            esc: btn3,
+            gui: btn4,
+            switch: btn5,
+            backspace: btn6,
+            accept: btn7,
+            rotate_a: pin16,
+            rotate_b: pin17,
+            rotate_button: pin18,
+        };
+
+        lcd::display_text(&mut target, "Keyboard Mode", 0)?;
+
+        keyboard_mode_main(
+            &runtime,
+            &mut target,
+            ble_device,
+            &mut keyboard,
+            &mut key_pins,
+            &mut rx,
+        );
+    }
+
+    if mode == 2 || setting.need_init() {
         esp32_nimble::BLEDevice::set_device_name("VibeKeys-MAX")?;
         setting.background_png.0.clear();
 
@@ -177,19 +315,7 @@ fn main() -> anyhow::Result<()> {
                     )?;
                     std::thread::sleep(std::time::Duration::from_secs(1));
                 }
-                unsafe {
-                    esp_idf_svc::sys::esp_restart();
-                }
-            }
-            Ok(bt_wifi_mode::BTevent::GoToOta) => {
-                for i in 1..=5 {
-                    lcd::display_text(
-                        &mut target,
-                        &format!("OTA is not yet supported.\n Restarting in {}s", i),
-                        0,
-                    )?;
-                    std::thread::sleep(std::time::Duration::from_secs(1));
-                }
+                esp_idf_svc::hal::reset::restart();
             }
             Err(e) => {
                 log::error!("Error receiving BLE event: {:?}", e);
@@ -202,14 +328,8 @@ fn main() -> anyhow::Result<()> {
                     std::thread::sleep(std::time::Duration::from_secs(1));
                 }
 
-                unsafe {
-                    esp_idf_svc::sys::esp_restart();
-                }
+                esp_idf_svc::hal::reset::restart();
             }
-        }
-
-        unsafe {
-            esp_idf_svc::sys::esp_restart();
         }
     }
 
@@ -230,14 +350,38 @@ fn main() -> anyhow::Result<()> {
         )?;
     }
 
-    if btn3.is_low() {
-        log::info!("Button ESC is pressed, Goto ota mode");
-        lcd::display_text(&mut target, "Entering OTA mode...", 0)?;
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        goto_next_firmware()?;
-    } else {
-        let mut ota = esp_idf_svc::ota::EspOta::new()?;
-        ota.mark_running_slot_valid()?;
+    let (tx, rx) = tokio::sync::mpsc::channel::<app::Event>(64);
+
+    {
+        runtime.spawn(app::key_task::mic_key(btn0, setting.mic_model.into()));
+
+        runtime.spawn(app::key_task::listen_key_event(
+            btn2,
+            tx.clone(),
+            app::Event::UltraThink,
+        ));
+
+        runtime.spawn(app::key_task::listen_key_event(
+            btn4,
+            tx.clone(),
+            app::Event::GUI,
+        ));
+
+        runtime.spawn(app::key_task::listen_key_event(
+            btn5,
+            tx.clone(),
+            app::Event::SwtchMode,
+        ));
+
+        runtime.spawn(app::key_task::backspace_key(btn6, tx.clone()));
+
+        runtime.spawn(app::key_task::esc_key(btn3, tx.clone()));
+
+        runtime.spawn(app::key_task::accept_key(btn7, tx.clone()));
+
+        runtime.spawn(app::key_task::rotate_key(pin16, pin17, tx.clone()));
+
+        runtime.spawn(app::key_task::rotate_push_key(pin18, tx.clone()));
     }
 
     lcd::display_text(&mut target, "Connecting the WiFi...", 0)?;
@@ -253,6 +397,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     if setting.server_url.starts_with("wss") {
+        _ = rustls_rustcrypto::provider().install_default();
         lcd::display_text(&mut target, "Syncing time...", 0)?;
         let r = sync_time(&mut target);
         if r.is_err() {
@@ -264,8 +409,6 @@ fn main() -> anyhow::Result<()> {
             }
         }
     }
-
-    let (tx, rx) = tokio::sync::mpsc::channel::<app::Event>(64);
 
     let worker = audio::AudioWorker {
         in_i2s: peripherals.i2s0,
@@ -291,84 +434,6 @@ fn main() -> anyhow::Result<()> {
             }
         })
         .map_err(|e| anyhow::anyhow!("Failed to spawn audio worker thread: {:?}", e))?;
-
-    _ = rustls_rustcrypto::provider().install_default();
-
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    {
-        runtime.spawn(app::key_task::mic_key(btn0, setting.mic_model.into()));
-
-        let btn2 = new_btn(
-            peripherals.pins.gpio2.into(),
-            esp_idf_svc::hal::gpio::Pull::Up,
-            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
-        )?;
-
-        runtime.spawn(app::key_task::listen_key_event(
-            btn2,
-            tx.clone(),
-            app::Event::UltraThink,
-        ));
-
-        runtime.spawn(app::key_task::listen_key_event(
-            btn4,
-            tx.clone(),
-            app::Event::GUI,
-        ));
-
-        let btn5 = new_btn(
-            peripherals.pins.gpio5.into(),
-            esp_idf_svc::hal::gpio::Pull::Up,
-            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
-        )?;
-
-        runtime.spawn(app::key_task::listen_key_event(
-            btn5,
-            tx.clone(),
-            app::Event::SwtchMode,
-        ));
-
-        let btn6 = new_btn(
-            peripherals.pins.gpio6.into(),
-            esp_idf_svc::hal::gpio::Pull::Up,
-            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
-        )?;
-        runtime.spawn(app::key_task::backspace_key(btn6, tx.clone()));
-
-        runtime.spawn(app::key_task::esc_key(btn3, tx.clone()));
-
-        let btn7 = new_btn(
-            peripherals.pins.gpio7.into(),
-            esp_idf_svc::hal::gpio::Pull::Up,
-            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
-        )?;
-
-        runtime.spawn(app::key_task::accept_key(btn7, tx.clone()));
-
-        let pin16 = new_btn(
-            peripherals.pins.gpio16.into(),
-            esp_idf_svc::hal::gpio::Pull::Up,
-            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
-        )?;
-        let pin17 = new_btn(
-            peripherals.pins.gpio17.into(),
-            esp_idf_svc::hal::gpio::Pull::Up,
-            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
-        )?;
-
-        runtime.spawn(app::key_task::rotate_key(pin16, pin17, tx.clone()));
-
-        let pin18 = new_btn(
-            peripherals.pins.gpio18.into(),
-            esp_idf_svc::hal::gpio::Pull::Up,
-            esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
-        )?;
-
-        runtime.spawn(app::key_task::rotate_push_key(pin18, tx.clone()));
-    }
 
     lcd::display_text(&mut target, "Connecting the Server...", 0)?;
 
@@ -400,4 +465,100 @@ pub fn log_heap() {
             heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024
         );
     }
+}
+
+fn keyboard_mode_main(
+    runtime: &tokio::runtime::Runtime,
+    display: &mut lcd::FrameBuffer,
+    ble_device: &mut esp32_nimble::BLEDevice,
+    keyboard: &mut bt_keyboard_mode::KeyboardAndMouse,
+    key_pins: &mut bt_keyboard_mode::KeysPin,
+    rx: &mut tokio::sync::mpsc::Receiver<bt_keyboard_mode::ControllerCommand>,
+) -> ! {
+    loop {
+        let event = runtime.block_on(bt_keyboard_mode::key_event(key_pins, rx));
+        let _ = handle_key_event(display, ble_device, keyboard, event);
+    }
+}
+
+pub fn handle_key_event(
+    display: &mut lcd::FrameBuffer,
+    ble_device: &mut esp32_nimble::BLEDevice,
+    keyboard: &mut bt_keyboard_mode::KeyboardAndMouse,
+    event: bt_keyboard_mode::ControllerCommand,
+) -> anyhow::Result<()> {
+    log::info!("Handling controller command: {:?}", event);
+    use bt_keyboard_mode::KeysPin;
+    match event {
+        bt_keyboard_mode::ControllerCommand::DisplayKeyboard(text) => {
+            lcd::display_text(display, &text, 0)?;
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardPress(KeysPin::MIC) => {
+            keyboard.press(b' '); // Space for mic on/off toggle
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardRelease(KeysPin::MIC) => {
+            keyboard.release(); // Release space
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardPress(KeysPin::ULTRATHINK) => {
+            keyboard.write("ultrathink ");
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardRelease(KeysPin::ULTRATHINK) => {}
+        bt_keyboard_mode::ControllerCommand::KeyboardPress(KeysPin::ESC) => {
+            keyboard.press(0x1b); // ESC
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardRelease(KeysPin::ESC) => {
+            keyboard.release();
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardPress(KeysPin::GUI) => {
+            keyboard.write("claude");
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardRelease(KeysPin::GUI) => {}
+        bt_keyboard_mode::ControllerCommand::KeyboardPress(KeysPin::SWITCH) => {
+            keyboard.shift_press(b'\t'); // Shift + Tab for switch mode
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardRelease(KeysPin::SWITCH) => {
+            keyboard.release(); // Release Shift + Tab
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardPress(KeysPin::BACKSPACE) => {
+            keyboard.press(0x08); // Backspace
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardRelease(KeysPin::BACKSPACE) => {
+            keyboard.release();
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardPress(KeysPin::ACCEPT) => {
+            {
+                let mut adv = ble_device.get_advertising().lock();
+                let adv_is_advertising = adv.is_advertising();
+                log::info!("Checking advertising state... {}", adv_is_advertising);
+                if !adv_is_advertising {
+                    adv.start().unwrap();
+                }
+            }
+            keyboard.press(b'\n'); //
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardRelease(KeysPin::ACCEPT) => {
+            keyboard.release();
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardPress(KeysPin::ROTATE_BUTTON) => {
+            keyboard.press(b' ');
+        }
+        bt_keyboard_mode::ControllerCommand::KeyboardRelease(KeysPin::ROTATE_BUTTON) => {
+            keyboard.release();
+        }
+        bt_keyboard_mode::ControllerCommand::RotateDown => {
+            // 箭头下
+            keyboard.press_raw(0x51, 0); // HID Down Arrow
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            keyboard.release();
+        }
+        bt_keyboard_mode::ControllerCommand::RotateUp => {
+            // 箭头上
+            keyboard.press_raw(0x52, 0); // HID Up Arrow
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            keyboard.release();
+        }
+        _ => {}
+    }
+
+    Ok(())
 }
