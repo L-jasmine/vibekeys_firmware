@@ -139,14 +139,14 @@ fn main() -> anyhow::Result<()> {
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
     )?;
 
-    // Switch Mode
+    // Backspace
     let btn5 = new_btn(
         peripherals.pins.gpio5.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
     )?;
 
-    // Backspace
+    // YOLO
     let btn6 = new_btn(
         peripherals.pins.gpio6.into(),
         esp_idf_svc::hal::gpio::Pull::Up,
@@ -258,8 +258,8 @@ fn main() -> anyhow::Result<()> {
             custom: btn2,
             esc: btn3,
             gui: btn4,
-            switch: btn5,
-            backspace: btn6,
+            backspace: btn5,
+            switch: btn6,
             accept: btn7,
             rotate_a: pin16,
             rotate_b: pin17,
@@ -373,13 +373,13 @@ fn main() -> anyhow::Result<()> {
             app::Event::GUI,
         ));
 
-        runtime.spawn(app::key_task::listen_key_event(
-            btn5,
-            tx.clone(),
-            app::Event::SwtchMode,
-        ));
+        runtime.spawn(app::key_task::backspace_key(btn5, tx.clone()));
 
-        runtime.spawn(app::key_task::backspace_key(btn6, tx.clone()));
+        runtime.spawn(app::key_task::listen_key_event(
+            btn6,
+            tx.clone(),
+            app::Event::SwitchMode,
+        ));
 
         runtime.spawn(app::key_task::esc_key(btn3, tx.clone()));
 

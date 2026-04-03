@@ -16,7 +16,7 @@ pub enum Event {
     RotatePush,
     Backspace,
     Custom,
-    SwtchMode,
+    SwitchMode,
     GUI,
 }
 
@@ -32,7 +32,7 @@ impl std::fmt::Debug for Event {
             Event::RotatePush => write!(f, "RotatePush"),
             Event::Backspace => write!(f, "Backspace"),
             Event::Custom => write!(f, "Custom"),
-            Event::SwtchMode => write!(f, "SwtchMode"),
+            Event::SwitchMode => write!(f, "SwtchMode"),
             Event::GUI => write!(f, "GUI"),
         }
     }
@@ -180,7 +180,7 @@ impl lcd::UI {
                 log::info!("Submitting input: {}", input);
                 server.send(protocol::ClientMessage::input(input)).await?;
             }
-            Event::SwtchMode => {
+            Event::SwitchMode => {
                 // shift + tab
                 server
                     .send(protocol::ClientMessage::PtyInput(b"\x1b[Z".to_vec()))
@@ -272,7 +272,7 @@ impl lcd::UI {
             Event::Accept => {
                 self.scroll_up()?;
             }
-            Event::SwtchMode => {
+            Event::SwitchMode => {
                 // shift + tab
                 server
                     .send(protocol::ClientMessage::PtyInput(b"\x1b[Z".to_vec()))

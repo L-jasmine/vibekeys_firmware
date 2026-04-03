@@ -97,8 +97,8 @@ impl KeymapConfig {
             1 => "CUSTOM",
             2 => "ESC",
             3 => "GUI",
-            4 => "SWITCH",
-            5 => "BACKSPACE",
+            4 => "BACKSPACE",
+            5 => "SWITCH",
             6 => "ACCEPT",
             7 => "ROTATE",
             _ => "UNKNOWN",
@@ -436,8 +436,8 @@ pub struct KeysPin {
     pub custom: crate::AnyBtn,
     pub esc: crate::AnyBtn,
     pub gui: crate::AnyBtn,
-    pub switch: crate::AnyBtn,
     pub backspace: crate::AnyBtn,
+    pub switch: crate::AnyBtn,
     pub accept: crate::AnyBtn,
     pub rotate_a: crate::AnyBtn,
     pub rotate_b: crate::AnyBtn,
@@ -449,8 +449,8 @@ impl KeysPin {
     pub const CUSTOM: u8 = 1;
     pub const ESC: u8 = 2;
     pub const GUI: u8 = 3;
-    pub const SWITCH: u8 = 4;
-    pub const BACKSPACE: u8 = 5;
+    pub const BACKSPACE: u8 = 4;
+    pub const SWITCH: u8 = 5;
     pub const ACCEPT: u8 = 6;
     pub const ROTATE_BUTTON: u8 = 7;
 }
