@@ -35,6 +35,28 @@
                         placeholder="Enter text to display on keyboard..."></textarea>
                 </div>
                 <button id="displayBtn" class="btn btn-secondary w-full" disabled>Send to Keyboard</button>
+
+                <div class="divider"></div>
+
+                <!-- Key Config Button -->
+                <button id="openKeyConfigBtn" class="btn btn-outline btn-info w-full" onclick="openKeyConfigModal()">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                    Key Configurator
+                </button>
+
+                <div class="divider"></div>
+
+                <div class="form-control">
+                    <label class="label">
+                        <span class="label-text">Key Mapping Configuration (JSON)</span>
+                    </label>
+                    <textarea id="keymapConfig" class="textarea textarea-accent w-full font-mono text-xs"
+                        placeholder='{"K1":{"raw":"Ctrl+C","type":"combo",...}, "K2":...}' rows="6"></textarea>
+                </div>
+                <button id="keymapBtn" class="btn btn-accent w-full" disabled>Send Key Mapping</button>
             </div>
 
             <!-- Notification Log -->
@@ -57,17 +79,21 @@
         const CONTROLLER_SERVICE_UUID = '9c80ffb6-affa-4083-944a-91e34c88bd76';
         const KEYBOARD_DISPLAY_ID = 'cdaa6472-67a8-4241-93cf-145051608573';
         const KEYBOARD_NOTIFY_ID = 'd4f7e1b3-3c4d-4f4e-8e2a-8f4e5c6d7e8f';
+        const KEYMAP_CONFIG_ID = '6f2a291c-0e4d-4f0f-9446-50bcd0b73bb0';
 
         let device = null;
         let server = null;
         let displayCharacteristic = null;
         let notifyCharacteristic = null;
+        let keymapCharacteristic = null;
 
         const statusEl = document.getElementById('status');
         const connectBtn = document.getElementById('connectBtn');
         const displayBtn = document.getElementById('displayBtn');
+        const keymapBtn = document.getElementById('keymapBtn');
         const controlPanel = document.getElementById('controlPanel');
         const displayText = document.getElementById('displayText');
+        const keymapConfig = document.getElementById('keymapConfig');
         const notificationLog = document.getElementById('notificationLog');
         const logEntries = document.getElementById('logEntries');
 
@@ -113,6 +139,7 @@
                 const service = await server.getPrimaryService(CONTROLLER_SERVICE_UUID);
                 displayCharacteristic = await service.getCharacteristic(KEYBOARD_DISPLAY_ID);
                 notifyCharacteristic = await service.getCharacteristic(KEYBOARD_NOTIFY_ID);
+                keymapCharacteristic = await service.getCharacteristic(KEYMAP_CONFIG_ID);
 
                 // Subscribe to notifications
                 await notifyCharacteristic.startNotifications();
@@ -135,8 +162,10 @@
                     connectBtn.disabled = false;
                     controlPanel.classList.add('hidden');
                     displayBtn.disabled = true;
+                    keymapBtn.disabled = true;
                     displayCharacteristic = null;
                     notifyCharacteristic = null;
+                    keymapCharacteristic = null;
                 });
 
             } catch (error) {
@@ -147,6 +176,10 @@
 
         displayText.addEventListener('input', () => {
             displayBtn.disabled = !displayText.value.trim() || !displayCharacteristic;
+        });
+
+        keymapConfig.addEventListener('input', () => {
+            keymapBtn.disabled = !keymapConfig.value.trim() || !keymapCharacteristic;
         });
 
         displayBtn.addEventListener('click', async () => {
@@ -176,10 +209,293 @@
             }
         });
 
+        keymapBtn.addEventListener('click', async () => {
+            const config = keymapConfig.value.trim();
+
+            if (!config) {
+                setStatus('Please enter key mapping configuration', 'error');
+                return;
+            }
+
+            // Validate JSON
+            try {
+                JSON.parse(config);
+            } catch (e) {
+                setStatus('Invalid JSON format: ' + e.message, 'error');
+                return;
+            }
+
+            try {
+                keymapBtn.disabled = true;
+                setStatus('Sending key mapping...', 'updating');
+
+                const data = new TextEncoder().encode(config);
+                await keymapCharacteristic.writeValue(data);
+
+                setStatus('Key mapping sent successfully!', 'connected');
+                addLogEntry('Key mapping updated');
+
+                keymapBtn.disabled = false;
+
+            } catch (error) {
+                console.error('Keymap error:', error);
+                setStatus('Failed to send key mapping: ' + error.message, 'error');
+                keymapBtn.disabled = false;
+            }
+        });
+
         // Check browser support
         if (!navigator.bluetooth) {
             setStatus('Your browser does not support Web Bluetooth', 'error');
             connectBtn.disabled = true;
+        }
+
+        // ========== Key Configurator ==========
+        const KEY_COUNT = 8;
+        const KEY_NAMES = ['MIC', 'ULTRATHINK', 'ESC', 'GUI', 'SWITCH', 'BACKSPACE', 'ACCEPT', 'ROTATE'];
+
+        function openKeyConfigModal() {
+            const modal = document.getElementById('keyConfigModal');
+            if (!modal) {
+                // Create modal if it doesn't exist
+                createKeyConfigModal();
+            }
+            document.getElementById('keyConfigModal').classList.remove('hidden');
+            loadCurrentKeymap();
+        }
+
+        function closeKeyConfigModal() {
+            document.getElementById('keyConfigModal').classList.add('hidden');
+        }
+
+        function createKeyConfigModal() {
+            const modalHtml = `
+                <div id="keyConfigModal" class="fixed inset-0 z-50 hidden">
+                    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick="closeKeyConfigModal()"></div>
+                    <div class="absolute inset-4 md:inset-auto md:top-1/2 md:left-1/2 md:-translate-x-1/2 md:-translate-y-1/2 md:w-full md:max-w-2xl">
+                        <div class="card bg-base-100 shadow-2xl h-full md:h-auto md:max-h-[90vh] overflow-hidden flex flex-col">
+                            <div class="card-body p-4 overflow-y-auto">
+                                <div class="flex items-center justify-between mb-4">
+                                    <h2 class="card-title text-xl">Key Mapping Configuration</h2>
+                                    <button class="btn btn-circle btn-sm" onclick="closeKeyConfigModal()">✕</button>
+                                </div>
+
+                                <div id="keys-container" class="space-y-3"></div>
+
+                                <div class="flex gap-2 mt-4">
+                                    <button class="btn btn-primary flex-1" onclick="applyKeymap()">Apply & Send</button>
+                                    <button class="btn btn-error flex-1" onclick="clearAllKeys()">Clear</button>
+                                </div>
+
+                                <div class="alert alert-info mt-4 text-sm">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-5 w-5" fill="none" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    <div>
+                                        <p><strong>Keys:</strong> <code class="badge">A</code> <code class="badge">Enter</code> <code class="badge">Space</code> <code class="badge">F1</code></p>
+                                        <p><strong>Combos:</strong> <code class="badge">Ctrl+C</code> <code class="badge">Alt+Tab</code></p>
+                                        <p><strong>Text:</strong> <code class="badge">"text content"</code></p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.insertAdjacentHTML('beforeend', modalHtml);
+            initKeyInputs();
+        }
+
+        function initKeyInputs() {
+            const container = document.getElementById('keys-container');
+            if (!container) return;
+
+            container.innerHTML = '';
+            for (let i = 0; i < KEY_COUNT; i++) {
+                const row = document.createElement('div');
+                row.className = 'flex items-center gap-3 p-3 bg-base-200 rounded-lg';
+                row.innerHTML = `
+                    <div class="btn btn-circle btn-sm btn-primary font-bold">${KEY_NAMES[i].charAt(0)}</div>
+                    <div class="flex-1">
+                        <input type="text" id="key-input-${i}" class="input input-bordered input-sm w-full"
+                            placeholder="Key or text..." oninput="analyzeKeyInput(${i})">
+                    </div>
+                    <span id="badge-${i}" class="badge badge-ghost hidden"></span>
+                `;
+                container.appendChild(row);
+            }
+        }
+
+        function analyzeKeyInput(index) {
+            const input = document.getElementById('key-input-' + index).value.trim();
+            const badge = document.getElementById('badge-' + index);
+
+            if (!input) {
+                badge.classList.add('hidden');
+                return;
+            }
+
+            const result = parseKeyBinding(input);
+            badge.classList.remove('hidden');
+
+            if (result.type === 'text') {
+                badge.textContent = 'TEXT';
+                badge.className = 'badge badge-success';
+            } else if (result.type === 'combo') {
+                const modText = result.modifiers.length > 0 ? result.modifiers.join('+') + '+' : '';
+                badge.textContent = modText + result.key;
+                badge.className = 'badge badge-warning';
+            } else {
+                badge.textContent = 'Invalid';
+                badge.className = 'badge badge-error';
+            }
+        }
+
+        function parseKeyBinding(input) {
+            // Text macro: wrapped in quotes
+            if ((input.startsWith('"') && input.endsWith('"')) ||
+                (input.startsWith("'") && input.endsWith("'"))) {
+                return { type: 'text', value: input.slice(1, -1) };
+            }
+
+            function isPrintableASCII(str) {
+                return /^[\\x20-\\x7E]+$/.test(str);
+            }
+
+            const validModifiers = ['ctrl', 'alt', 'shift', 'meta', 'win', 'cmd'];
+            const validKeys = [
+                'enter', 'return', 'space', 'tab', 'escape', 'esc', 'backspace', 'delete', 'insert',
+                'home', 'end', 'pageup', 'pagedown', 'up', 'down', 'left', 'right'
+            ];
+            // Add F1-F12
+            for (let i = 1; i <= 12; i++) {
+                validKeys.push('f' + i);
+            }
+            validKeys.push('plus', 'minus', 'equal', 'semicolon', 'quote', 'backquote', 'backslash');
+            validKeys.push('comma', 'period', 'slash', 'bracketleft', 'bracketright');
+
+            // Check if uppercase letter (as key)
+            if (/^[A-Z]$/.test(input)) {
+                return { type: 'combo', modifiers: [], key: input };
+            }
+
+            // Check if single digit (as key)
+            if (/^[0-9]$/.test(input)) {
+                return { type: 'combo', modifiers: [], key: input };
+            }
+
+            // Check if known key name
+            const keyLower = input.toLowerCase();
+            if (validKeys.includes(keyLower)) {
+                return { type: 'combo', modifiers: [], key: input.toUpperCase() };
+            }
+
+            if (!input.includes('+')) {
+                // Other ASCII input as text
+                if (isPrintableASCII(input)) {
+                    return { type: 'text', value: input };
+                }
+                return { type: 'invalid' };
+            }
+
+            // Handle combo keys
+            const parts = input.split('+').map(p => p.trim().toLowerCase());
+            const lastPart = parts.pop();
+            const modifiers = [];
+
+            for (const part of parts) {
+                if (validModifiers.includes(part)) {
+                    modifiers.push(part === 'win' || part === 'cmd' ? 'meta' : part);
+                } else {
+                    if (isPrintableASCII(input)) {
+                        return { type: 'text', value: input };
+                    }
+                    return { type: 'invalid' };
+                }
+            }
+
+            // Check last part of combo
+            if (validKeys.includes(lastPart) || /^[A-Za-z0-9]$/.test(lastPart)) {
+                return { type: 'combo', modifiers: modifiers, key: lastPart.toUpperCase() };
+            }
+
+            if (isPrintableASCII(input)) {
+                return { type: 'text', value: input };
+            }
+
+            return { type: 'invalid' };
+        }
+
+        function generateKeymapConfig() {
+            const config = {};
+            for (let i = 0; i < KEY_COUNT; i++) {
+                const input = document.getElementById('key-input-' + i).value.trim();
+                if (input) {
+                    const parsed = parseKeyBinding(input);
+                    parsed.raw = input;
+                    config[KEY_NAMES[i]] = parsed;
+                }
+            }
+            return config;
+        }
+
+        function loadCurrentKeymap() {
+            const currentConfig = keymapConfig.value.trim();
+            if (!currentConfig) return;
+
+            try {
+                const config = JSON.parse(currentConfig);
+                for (let i = 0; i < KEY_COUNT; i++) {
+                    const keyName = KEY_NAMES[i];
+                    const input = document.getElementById('key-input-' + i);
+                    if (config[keyName] && input) {
+                        input.value = config[keyName].raw || '';
+                        analyzeKeyInput(i);
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to load existing config:', e);
+            }
+        }
+
+        function clearAllKeys() {
+            for (let i = 0; i < KEY_COUNT; i++) {
+                const input = document.getElementById('key-input-' + i);
+                if (input) {
+                    input.value = '';
+                    analyzeKeyInput(i);
+                }
+            }
+        }
+
+        async function applyKeymap() {
+            const config = generateKeymapConfig();
+            const json = JSON.stringify(config);
+
+            // Fill to config textarea
+            keymapConfig.value = json;
+
+            // Close modal
+            closeKeyConfigModal();
+
+            // Auto send
+            if (keymapCharacteristic) {
+                try {
+                    keymapBtn.disabled = true;
+                    setStatus('Sending key mapping...', 'updating');
+                    const data = new TextEncoder().encode(json);
+                    await keymapCharacteristic.writeValue(data);
+                    setStatus('Key mapping sent successfully!', 'connected');
+                    addLogEntry('Key mapping updated');
+                    keymapBtn.disabled = false;
+                } catch (error) {
+                    console.error('Send failed:', error);
+                    setStatus('Send failed: ' + error.message, 'error');
+                    keymapBtn.disabled = false;
+                }
+            } else {
+                setStatus('Please connect to device first', 'error');
+            }
         }
     </script>
 </body>

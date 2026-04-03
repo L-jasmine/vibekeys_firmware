@@ -181,7 +181,7 @@ fn main() -> anyhow::Result<()> {
         esp_idf_svc::hal::gpio::InterruptType::AnyEdge,
     )?;
 
-    let nvs = esp_idf_svc::nvs::EspDefaultNvs::new(partition, "setting", true)?;
+    let mut nvs = esp_idf_svc::nvs::EspDefaultNvs::new(partition, "setting", true)?;
 
     let mut setting = bt_wifi_mode::Setting::load_from_nvs(&nvs)?;
 
@@ -268,6 +268,10 @@ fn main() -> anyhow::Result<()> {
 
         lcd::display_text(&mut target, "Keyboard Mode", 0)?;
 
+        // Load keymap config from NVS
+        let mut keymap = bt_keyboard_mode::KeymapConfig::load_from_nvs(&nvs)?;
+        log::info!("Loaded keymap config with {} keys", keymap.keys.len());
+
         keyboard_mode_main(
             &runtime,
             &mut target,
@@ -275,6 +279,8 @@ fn main() -> anyhow::Result<()> {
             &mut keyboard,
             &mut key_pins,
             &mut rx,
+            &mut nvs,
+            &mut keymap,
         );
     }
 
@@ -474,11 +480,54 @@ fn keyboard_mode_main(
     keyboard: &mut bt_keyboard_mode::KeyboardAndMouse,
     key_pins: &mut bt_keyboard_mode::KeysPin,
     rx: &mut tokio::sync::mpsc::Receiver<bt_keyboard_mode::ControllerCommand>,
+    nvs: &mut esp_idf_svc::nvs::EspDefaultNvs,
+    keymap: &mut bt_keyboard_mode::KeymapConfig,
 ) -> ! {
     loop {
         let event = runtime.block_on(bt_keyboard_mode::key_event(key_pins, rx));
-        let _ = handle_key_event(display, ble_device, keyboard, event);
+        let _ = handle_key_event(display, ble_device, keyboard, event, nvs, keymap);
     }
+}
+
+// Execute key action based on keymap configuration
+fn execute_key_action(
+    keyboard: &mut bt_keyboard_mode::KeyboardAndMouse,
+    action: &bt_keyboard_mode::KeyAction,
+    is_press: bool,
+) -> anyhow::Result<()> {
+    use bt_keyboard_mode::KeyAction;
+
+    match action {
+        KeyAction::Combo { modifiers, key, .. } => {
+            if is_press {
+                // Apply modifiers and press key
+                let mut modifier_mask = 0u8;
+
+                for mod_name in modifiers {
+                    match mod_name.as_str() {
+                        "ctrl" => modifier_mask |= 0x01,
+                        "shift" => modifier_mask |= 0x02,
+                        "alt" => modifier_mask |= 0x04,
+                        "meta" => modifier_mask |= 0x08,
+                        _ => {}
+                    }
+                }
+
+                // Convert key name to HID code
+                let key_code = bt_keyboard_mode::key_name_to_hid_code(key)?;
+                keyboard.press_raw(key_code, modifier_mask);
+            } else {
+                keyboard.release();
+            }
+        }
+        KeyAction::Text { value, .. } => {
+            if is_press {
+                keyboard.write(value);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 pub fn handle_key_event(
@@ -486,6 +535,8 @@ pub fn handle_key_event(
     ble_device: &mut esp32_nimble::BLEDevice,
     keyboard: &mut bt_keyboard_mode::KeyboardAndMouse,
     event: bt_keyboard_mode::ControllerCommand,
+    nvs: &mut esp_idf_svc::nvs::EspDefaultNvs,
+    keymap: &mut bt_keyboard_mode::KeymapConfig,
 ) -> anyhow::Result<()> {
     log::info!("Handling controller command: {:?}", event);
     use bt_keyboard_mode::KeysPin;
@@ -493,57 +544,53 @@ pub fn handle_key_event(
         bt_keyboard_mode::ControllerCommand::DisplayKeyboard(text) => {
             lcd::display_text(display, &text, 0)?;
         }
-        bt_keyboard_mode::ControllerCommand::KeyboardPress(KeysPin::MIC) => {
-            keyboard.press(b' '); // Space for mic on/off toggle
-        }
-        bt_keyboard_mode::ControllerCommand::KeyboardRelease(KeysPin::MIC) => {
-            keyboard.release(); // Release space
-        }
-        bt_keyboard_mode::ControllerCommand::KeyboardPress(KeysPin::ULTRATHINK) => {
-            keyboard.write("ultrathink ");
-        }
-        bt_keyboard_mode::ControllerCommand::KeyboardRelease(KeysPin::ULTRATHINK) => {}
-        bt_keyboard_mode::ControllerCommand::KeyboardPress(KeysPin::ESC) => {
-            keyboard.press(0x1b); // ESC
-        }
-        bt_keyboard_mode::ControllerCommand::KeyboardRelease(KeysPin::ESC) => {
-            keyboard.release();
-        }
-        bt_keyboard_mode::ControllerCommand::KeyboardPress(KeysPin::GUI) => {
-            keyboard.write("claude");
-        }
-        bt_keyboard_mode::ControllerCommand::KeyboardRelease(KeysPin::GUI) => {}
-        bt_keyboard_mode::ControllerCommand::KeyboardPress(KeysPin::SWITCH) => {
-            keyboard.shift_press(b'\t'); // Shift + Tab for switch mode
-        }
-        bt_keyboard_mode::ControllerCommand::KeyboardRelease(KeysPin::SWITCH) => {
-            keyboard.release(); // Release Shift + Tab
-        }
-        bt_keyboard_mode::ControllerCommand::KeyboardPress(KeysPin::BACKSPACE) => {
-            keyboard.press(0x08); // Backspace
-        }
-        bt_keyboard_mode::ControllerCommand::KeyboardRelease(KeysPin::BACKSPACE) => {
-            keyboard.release();
-        }
-        bt_keyboard_mode::ControllerCommand::KeyboardPress(KeysPin::ACCEPT) => {
-            {
-                let mut adv = ble_device.get_advertising().lock();
-                let adv_is_advertising = adv.is_advertising();
-                log::info!("Checking advertising state... {}", adv_is_advertising);
-                if !adv_is_advertising {
-                    adv.start().unwrap();
+        bt_keyboard_mode::ControllerCommand::KeyboardPress(pin_index) => {
+            let key_name = bt_keyboard_mode::KeymapConfig::get_key_name(pin_index);
+            if let Some(action) = keymap.keys.get(key_name) {
+                log::info!("Executing custom keymap for {}: {:?}", key_name, action);
+                let _ = execute_key_action(keyboard, action, true);
+            } else {
+                // Default behavior
+                match pin_index {
+                    KeysPin::MIC => keyboard.press(b' '),
+                    KeysPin::ULTRATHINK => keyboard.write("ultrathink "),
+                    KeysPin::ESC => keyboard.press(0x1b),
+                    KeysPin::GUI => keyboard.write("claude"),
+                    KeysPin::SWITCH => keyboard.shift_press(b'\t'),
+                    KeysPin::BACKSPACE => keyboard.press(0x08),
+                    KeysPin::ACCEPT => {
+                        let mut adv = ble_device.get_advertising().lock();
+                        if !adv.is_advertising() {
+                            adv.start().unwrap();
+                        }
+                        keyboard.press(b'\n');
+                    }
+                    KeysPin::ROTATE_BUTTON => keyboard.press(b' '),
+                    _ => {}
                 }
             }
-            keyboard.press(b'\n'); //
         }
-        bt_keyboard_mode::ControllerCommand::KeyboardRelease(KeysPin::ACCEPT) => {
-            keyboard.release();
-        }
-        bt_keyboard_mode::ControllerCommand::KeyboardPress(KeysPin::ROTATE_BUTTON) => {
-            keyboard.press(b' ');
-        }
-        bt_keyboard_mode::ControllerCommand::KeyboardRelease(KeysPin::ROTATE_BUTTON) => {
-            keyboard.release();
+        bt_keyboard_mode::ControllerCommand::KeyboardRelease(pin_index) => {
+            let key_name = bt_keyboard_mode::KeymapConfig::get_key_name(pin_index);
+            if let Some(action) = keymap.keys.get(key_name) {
+                log::info!("Releasing custom keymap for {}: {:?}", key_name, action);
+                let _ = execute_key_action(keyboard, action, false);
+            } else {
+                // Default behavior
+                match pin_index {
+                    KeysPin::MIC
+                    | KeysPin::ULTRATHINK
+                    | KeysPin::GUI
+                    | KeysPin::SWITCH
+                    | KeysPin::BACKSPACE
+                    | KeysPin::ACCEPT
+                    | KeysPin::ESC
+                    | KeysPin::ROTATE_BUTTON => {
+                        keyboard.release();
+                    }
+                    _ => {}
+                }
+            }
         }
         bt_keyboard_mode::ControllerCommand::RotateDown => {
             // 箭头下
@@ -557,7 +604,28 @@ pub fn handle_key_event(
             std::thread::sleep(std::time::Duration::from_millis(200));
             keyboard.release();
         }
-        _ => {}
+        bt_keyboard_mode::ControllerCommand::KeymapConfig(config) => {
+            log::info!("Received keymap config: {}", config);
+            match bt_keyboard_mode::KeymapConfig::from_json(&config) {
+                Ok(keymap_) => {
+                    keymap.merge(keymap_);
+                    match keymap.save_to_nvs(nvs) {
+                        Ok(()) => {
+                            log::info!("Keymap config merged and saved to NVS successfully");
+                            lcd::display_text(display, "Keymap merged!", 0)?;
+                        }
+                        Err(e) => {
+                            log::error!("Failed to save keymap to NVS: {:?}", e);
+                            lcd::display_text(display, "Save failed!", 0)?;
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::error!("Failed to parse keymap JSON: {:?}", e);
+                    lcd::display_text(display, "Invalid JSON!", 0)?;
+                }
+            }
+        }
     }
 
     Ok(())
