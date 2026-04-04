@@ -15,9 +15,9 @@ pub enum Event {
     RotateDown,
     RotatePush,
     Backspace,
-    UltraThink,
-    SwtchMode,
-    GUI,
+    Custom,
+    SwitchMode,
+    NEXT,
 }
 
 impl std::fmt::Debug for Event {
@@ -31,9 +31,9 @@ impl std::fmt::Debug for Event {
             Event::RotateDown => write!(f, "RotateDown"),
             Event::RotatePush => write!(f, "RotatePush"),
             Event::Backspace => write!(f, "Backspace"),
-            Event::UltraThink => write!(f, "UltraThink"),
-            Event::SwtchMode => write!(f, "SwtchMode"),
-            Event::GUI => write!(f, "GUI"),
+            Event::Custom => write!(f, "Custom"),
+            Event::SwitchMode => write!(f, "SwtchMode"),
+            Event::NEXT => write!(f, "Next"),
         }
     }
 }
@@ -180,10 +180,7 @@ impl lcd::UI {
                 log::info!("Submitting input: {}", input);
                 server.send(protocol::ClientMessage::input(input)).await?;
             }
-            Event::UltraThink => {
-                self.insert_text_at_start("UltraThink ")?;
-            }
-            Event::SwtchMode => {
+            Event::SwitchMode => {
                 // shift + tab
                 server
                     .send(protocol::ClientMessage::PtyInput(b"\x1b[Z".to_vec()))
@@ -220,7 +217,7 @@ impl lcd::UI {
             Event::RotatePush => {
                 self.reset_scroll()?;
             }
-            Event::GUI => self.next_choice()?,
+            Event::NEXT => self.next_choice()?,
             Event::Backspace => {
                 if self.allow_input() {
                     self.remove_input_char()?;
@@ -275,13 +272,13 @@ impl lcd::UI {
             Event::Accept => {
                 self.scroll_up()?;
             }
-            Event::SwtchMode => {
+            Event::SwitchMode => {
                 // shift + tab
                 server
                     .send(protocol::ClientMessage::PtyInput(b"\x1b[Z".to_vec()))
                     .await?;
             }
-            Event::GUI => {
+            Event::Custom => {
                 server.send(protocol::ClientMessage::Sync).await?;
             }
             _ => {

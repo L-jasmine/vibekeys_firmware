@@ -5,8 +5,7 @@ use esp32_nimble::{
     enums::*,
     hid::*,
     utilities::{mutex::Mutex, BleUuid},
-    uuid128, BLEAdvertisementData, BLECharacteristic, BLEDevice, BLEHIDDevice, BLEServer,
-    NimbleProperties,
+    uuid128, BLEAdvertisementData, BLECharacteristic, BLEDevice, BLEHIDDevice, NimbleProperties,
 };
 use std::sync::Arc;
 use zerocopy::IntoBytes;
@@ -18,6 +17,106 @@ use zerocopy_derive::{Immutable, IntoBytes};
 pub const KEY_RETURN: u8 = 0xb0;
 pub const KEY_ESC: u8 = 0xb1;
 pub const KEY_TAB: u8 = 0xb3;
+
+// Function keys (F1-F12)
+pub const KEY_F1: u8 = 0x3a;
+pub const KEY_F2: u8 = 0x3b;
+pub const KEY_F3: u8 = 0x3c;
+pub const KEY_F4: u8 = 0x3d;
+pub const KEY_F5: u8 = 0x3e;
+pub const KEY_F6: u8 = 0x3f;
+pub const KEY_F7: u8 = 0x40;
+pub const KEY_F8: u8 = 0x41;
+pub const KEY_F9: u8 = 0x42;
+pub const KEY_F10: u8 = 0x43;
+pub const KEY_F11: u8 = 0x44;
+pub const KEY_F12: u8 = 0x45;
+
+// Key mapping configuration
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(tag = "type")]
+pub enum KeyAction {
+    #[serde(rename = "combo")]
+    Combo {
+        raw: String,
+        modifiers: Vec<String>,
+        key: String,
+    },
+    #[serde(rename = "text")]
+    Text { raw: String, value: String },
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct KeymapConfig {
+    #[serde(flatten)]
+    pub keys: std::collections::HashMap<String, KeyAction>,
+}
+
+impl KeymapConfig {
+    pub fn from_json(json: &str) -> anyhow::Result<Self> {
+        Ok(serde_json::from_str(json)?)
+    }
+
+    pub fn to_json(&self) -> anyhow::Result<String> {
+        Ok(serde_json::to_string_pretty(self)?)
+    }
+
+    pub fn load_from_nvs(nvs: &esp_idf_svc::nvs::EspDefaultNvs) -> anyhow::Result<Self> {
+        if !nvs.contains("keymap_config")? {
+            log::info!("No keymap config found in NVS, using default");
+            return Ok(Self::default());
+        }
+
+        let keymap_size = nvs.blob_len("keymap_config")?.unwrap_or_default();
+        log::info!("Keymap config size in NVS: {} bytes", keymap_size);
+
+        let mut buf = vec![0; keymap_size];
+        nvs.get_blob("keymap_config", &mut buf)?;
+        let json = String::from_utf8(buf)?;
+        Ok(Self::from_json(&json)?)
+    }
+
+    pub fn save_to_nvs(&self, nvs: &mut esp_idf_svc::nvs::EspDefaultNvs) -> anyhow::Result<()> {
+        let json = self.to_json()?;
+        let bytes = json.as_bytes();
+        nvs.set_blob("keymap_config", bytes)?;
+        log::info!("Keymap config saved to NVS ({} bytes)", bytes.len());
+        Ok(())
+    }
+
+    pub fn default() -> Self {
+        Self {
+            keys: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Get key name from KeysPin index
+    pub fn get_key_name(pin_index: u8) -> &'static str {
+        match pin_index {
+            KeysPin::MIC => "MIC",
+            KeysPin::CUSTOM => "CUSTOM",
+            KeysPin::ESC => "ESC",
+            KeysPin::NEXT => "NEXT",
+            KeysPin::BACKSPACE => "BACKSPACE",
+            KeysPin::SWITCH => "SWITCH",
+            KeysPin::ACCEPT => "ACCEPT",
+            KeysPin::ROTATE_BUTTON => "ROTATE",
+            _ => "UNKNOWN",
+        }
+    }
+
+    /// Merge with another keymap, new values override existing ones
+    pub fn merge(&mut self, other: KeymapConfig) {
+        for (key, value) in other.keys {
+            self.keys.insert(key, value);
+        }
+    }
+
+    /// Remove a key mapping by name
+    pub fn remove(&mut self, key_name: &str) {
+        self.keys.remove(key_name);
+    }
+}
 
 const KEYBOARD_ID: u8 = 0x01;
 const MEDIA_KEYS_ID: u8 = 0x02;
@@ -334,11 +433,11 @@ struct MediaKeyReport {
 
 pub struct KeysPin {
     pub mic: crate::AnyBtn,
-    pub ultrathink: crate::AnyBtn,
+    pub custom: crate::AnyBtn,
     pub esc: crate::AnyBtn,
-    pub gui: crate::AnyBtn,
-    pub switch: crate::AnyBtn,
+    pub next: crate::AnyBtn,
     pub backspace: crate::AnyBtn,
+    pub switch: crate::AnyBtn,
     pub accept: crate::AnyBtn,
     pub rotate_a: crate::AnyBtn,
     pub rotate_b: crate::AnyBtn,
@@ -347,11 +446,11 @@ pub struct KeysPin {
 
 impl KeysPin {
     pub const MIC: u8 = 0;
-    pub const ULTRATHINK: u8 = 1;
+    pub const CUSTOM: u8 = 1;
     pub const ESC: u8 = 2;
-    pub const GUI: u8 = 3;
-    pub const SWITCH: u8 = 4;
-    pub const BACKSPACE: u8 = 5;
+    pub const NEXT: u8 = 3;
+    pub const BACKSPACE: u8 = 4;
+    pub const SWITCH: u8 = 5;
     pub const ACCEPT: u8 = 6;
     pub const ROTATE_BUTTON: u8 = 7;
 }
@@ -368,11 +467,11 @@ pub async fn key_event(
                 ControllerCommand::KeyboardRelease(KeysPin::MIC)
             }
         },
-        _ = key_pins.ultrathink.wait_for_any_edge() => {
-            if key_pins.ultrathink.is_low() {
-                ControllerCommand::KeyboardPress(KeysPin::ULTRATHINK)
+        _ = key_pins.custom.wait_for_any_edge() => {
+            if key_pins.custom.is_low() {
+                ControllerCommand::KeyboardPress(KeysPin::CUSTOM)
             } else {
-                ControllerCommand::KeyboardRelease(KeysPin::ULTRATHINK)
+                ControllerCommand::KeyboardRelease(KeysPin::CUSTOM)
             }
         }
         _ = key_pins.esc.wait_for_any_edge() => {
@@ -384,11 +483,11 @@ pub async fn key_event(
                 ControllerCommand::KeyboardRelease(KeysPin::ESC)
             }
         },
-        _ = key_pins.gui.wait_for_any_edge() => {
-            if key_pins.gui.is_low() {
-                ControllerCommand::KeyboardPress(KeysPin::GUI)
+        _ = key_pins.next.wait_for_any_edge() => {
+            if key_pins.next.is_low() {
+                ControllerCommand::KeyboardPress(KeysPin::NEXT)
             } else {
-                ControllerCommand::KeyboardRelease(KeysPin::GUI)
+                ControllerCommand::KeyboardRelease(KeysPin::NEXT)
             }
         },
         _ = key_pins.switch.wait_for_any_edge() => {
@@ -738,9 +837,9 @@ impl KeyboardAndMouse {
 // controller service and characteristic UUIDs
 
 const CONTROLLER_SERVICE_ID: BleUuid = uuid128!("9c80ffb6-affa-4083-944a-91e34c88bd76");
-const GOTO_OTA_ID: BleUuid = uuid128!("703df7cd-1fec-4126-b3df-a6a8858c1e5e");
 const KEYBOARD_DISPLAY_ID: BleUuid = uuid128!("cdaa6472-67a8-4241-93cf-145051608573");
 const KEYBOARD_NOTIFY_ID: BleUuid = uuid128!("d4f7e1b3-3c4d-4f4e-8e2a-8f4e5c6d7e8f");
+const KEYMAP_CONFIG_ID: BleUuid = uuid128!("6f2a291c-0e4d-4f0f-9446-50bcd0b73bb0");
 
 pub struct ControllerService {
     pub notify_characteristic: Arc<Mutex<BLECharacteristic>>,
@@ -762,6 +861,7 @@ pub enum ControllerCommand {
     KeyboardRelease(u8),
     RotateDown,
     RotateUp,
+    KeymapConfig(String),
 }
 
 pub fn new_controller_service(
@@ -770,6 +870,8 @@ pub fn new_controller_service(
 ) -> anyhow::Result<ControllerService> {
     let server = device.get_server();
     let service = server.create_service(CONTROLLER_SERVICE_ID);
+
+    let tx_ = tx.clone();
 
     let display_characteristic = service
         .lock()
@@ -781,12 +883,25 @@ pub fn new_controller_service(
         log::info!("Received data: {:?}", data);
         let s = String::from_utf8_lossy(&data).to_string();
 
-        let _ = tx.blocking_send(ControllerCommand::DisplayKeyboard(s));
+        let _ = tx_.blocking_send(ControllerCommand::DisplayKeyboard(s));
     });
 
     let notify_characteristic = service
         .lock()
         .create_characteristic(KEYBOARD_NOTIFY_ID, NimbleProperties::NOTIFY);
+
+    let keymap_config_characteristic = service
+        .lock()
+        .create_characteristic(KEYMAP_CONFIG_ID, NimbleProperties::WRITE);
+
+    keymap_config_characteristic.lock().on_write(move |args| {
+        log::info!("Wrote to keymap config characteristic");
+        let data = args.recv_data();
+        log::info!("Received keymap data: {:?}", data);
+        let s = String::from_utf8_lossy(&data).to_string();
+
+        let _ = tx.blocking_send(ControllerCommand::KeymapConfig(s));
+    });
 
     Ok(ControllerService {
         notify_characteristic,
@@ -808,4 +923,100 @@ pub fn start_ble_advertising(
     ble_advertising.lock().start()?;
 
     Ok(())
+}
+
+/// Convert key name string to HID keycode with optional modifier bit
+/// Returns (keycode, modifier_bit)
+/// For modifier keys (Ctrl, Shift, Alt, GUI), modifier_bit is non-zero
+pub fn key_name_to_hid_code(key: &str) -> anyhow::Result<(u8, u8)> {
+    let key_upper = key.to_uppercase();
+    let (code, modifier) = match key_upper.as_str() {
+        // Letters A-Z
+        "A" => (0x04, 0),
+        "B" => (0x05, 0),
+        "C" => (0x06, 0),
+        "D" => (0x07, 0),
+        "E" => (0x08, 0),
+        "F" => (0x09, 0),
+        "G" => (0x0A, 0),
+        "H" => (0x0B, 0),
+        "I" => (0x0C, 0),
+        "J" => (0x0D, 0),
+        "K" => (0x0E, 0),
+        "L" => (0x0F, 0),
+        "M" => (0x10, 0),
+        "N" => (0x11, 0),
+        "O" => (0x12, 0),
+        "P" => (0x13, 0),
+        "Q" => (0x14, 0),
+        "R" => (0x15, 0),
+        "S" => (0x16, 0),
+        "T" => (0x17, 0),
+        "U" => (0x18, 0),
+        "V" => (0x19, 0),
+        "W" => (0x1A, 0),
+        "X" => (0x1B, 0),
+        "Y" => (0x1C, 0),
+        "Z" => (0x1D, 0),
+        // Numbers
+        "1" => (0x1E, 0),
+        "2" => (0x1F, 0),
+        "3" => (0x20, 0),
+        "4" => (0x21, 0),
+        "5" => (0x22, 0),
+        "6" => (0x23, 0),
+        "7" => (0x24, 0),
+        "8" => (0x25, 0),
+        "9" => (0x26, 0),
+        "0" => (0x27, 0),
+        // Special keys
+        "ENTER" | "RETURN" => (0x28, 0),
+        "ESCAPE" | "ESC" => (0x29, 0),
+        "BACKSPACE" => (0x2A, 0),
+        "TAB" => (0x2B, 0),
+        "SPACE" => (0x2C, 0),
+        // F keys
+        "F1" => (KEY_F1, 0),
+        "F2" => (KEY_F2, 0),
+        "F3" => (KEY_F3, 0),
+        "F4" => (KEY_F4, 0),
+        "F5" => (KEY_F5, 0),
+        "F6" => (KEY_F6, 0),
+        "F7" => (KEY_F7, 0),
+        "F8" => (KEY_F8, 0),
+        "F9" => (KEY_F9, 0),
+        "F10" => (KEY_F10, 0),
+        "F11" => (KEY_F11, 0),
+        "F12" => (KEY_F12, 0),
+        // Arrow keys
+        "RIGHT" => (0x4F, 0),
+        "LEFT" => (0x50, 0),
+        "DOWN" => (0x51, 0),
+        "UP" => (0x52, 0),
+        // Symbols
+        "MINUS" | "PLUS" => (0x2D, 0),
+        "EQUAL" => (0x2E, 0),
+        "SEMICOLON" => (0x33, 0),
+        "QUOTE" => (0x34, 0),
+        "BACKQUOTE" => (0x35, 0),
+        "BACKSLASH" => (0x31, 0),
+        "COMMA" => (0x36, 0),
+        "PERIOD" => (0x37, 0),
+        "SLASH" => (0x38, 0),
+        "BRACKETLEFT" => (0x2F, 0),
+        "BRACKETRIGHT" => (0x30, 0),
+        // Modifier keys - keycode + modifier bit
+        "CTRL" | "CONTROL" => (0xE0, 0x01),
+        "SHIFT" => (0xE1, 0x02),
+        "ALT" | "OPTION" => (0xE2, 0x04),
+        "GUI" | "WIN" | "WINDOWS" | "META" | "SUPER" | "COMMAND" => (0xE3, 0x08),
+        "RCTRL" | "RCONTROL" => (0xE4, 0x10),
+        "RSHIFT" => (0xE5, 0x20),
+        "RALT" | "ROPTION" => (0xE6, 0x40),
+        "RGUI" | "RWIN" | "RWINDOWS" | "RMETA" | "RSUPER" | "RCOMMAND" => (0xE7, 0x80),
+        _ => {
+            return Err(anyhow::anyhow!("Unknown key: {}", key));
+        }
+    };
+    Ok((code, modifier))
 }
