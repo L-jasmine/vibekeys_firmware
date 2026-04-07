@@ -116,26 +116,6 @@ pub fn new_setting_service(
     setting: Arc<Mutex<(Setting, esp_idf_svc::nvs::EspDefaultNvs)>>,
     evt_tx: Option<tokio::sync::mpsc::Sender<BTevent>>,
 ) -> anyhow::Result<()> {
-    // let server = device.get_server();
-    // server.on_connect(move |server, desc| {
-    //     log::info!("Client connected: {:?}", desc);
-
-    //     server
-    //         .update_conn_params(desc.conn_handle(), 24, 48, 0, 60)
-    //         .unwrap();
-
-    //     if server.connected_count() < (esp_idf_svc::sys::CONFIG_BT_NIMBLE_MAX_CONNECTIONS as _) {
-    //         log::info!("Multi-connect support: start advertising");
-    //         ble_advertising.lock().start().unwrap();
-    //     }
-    // });
-
-    // server.on_disconnect(|_desc, reason| {
-    //     log::info!("Client disconnected ({:?})", reason);
-    // });
-
-    // let service = server.create_service(SERVICE_ID);
-
     let setting1 = setting.clone();
     let setting2 = setting.clone();
 

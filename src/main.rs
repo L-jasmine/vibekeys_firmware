@@ -250,7 +250,20 @@ fn main() -> anyhow::Result<()> {
 
         let ble_device = esp32_nimble::BLEDevice::take();
 
+        let adv = ble_device.get_advertising();
+
         let server = ble_device.get_server();
+        server.on_connect(|server, desc| {
+            log::info!("Client connected: {:?}", desc);
+            if server.connected_count() < 5 {
+                log::info!("Starting advertising for next client");
+                if let Err(e) = adv.lock().start() {
+                    log::error!("Failed to start advertising: {:?}", e);
+                }
+            } else {
+                log::info!("Max clients connected, not advertising");
+            }
+        });
         let service = server.create_service(bt_wifi_mode::SERVICE_ID);
 
         let mut keyboard = bt_keyboard_mode::KeyboardAndMouse::new(ble_device, 100)?;
