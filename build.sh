@@ -14,7 +14,7 @@ case "$MODE" in
     keys)
         echo "Building keys image..."
         cargo build --bin vibekeys --release
-        espflash save-image --chip esp32s3 --flash-size 16mb --partition-table partitions.csv --target-app-partition ota_1 target/xtensa-esp32s3-espidf/release/vibekeys ./vibekeys.bin
+        espflash save-image --chip esp32s3 --flash-size 16mb --partition-table partitions.csv --target-app-partition ota_1 target/xtensa-esp32s3-espidf/release/vibekeys ./vibekeys_ota.bin
         ;;
     keys_bin)
         echo "Building keys binary image..."
@@ -25,9 +25,9 @@ case "$MODE" in
         echo "Building keys binary image with OTA header..."
         cargo build --bin vibekeys --release
         cargo build --bin ota --release
-        espflash save-image --chip esp32s3 --merge --flash-size 16mb --partition-table partitions.csv --target-app-partition ota_1 target/xtensa-esp32s3-espidf/release/vibekeys ./vibekeys_ota.bin
+        espflash save-image --chip esp32s3 --merge --flash-size 16mb --partition-table partitions.csv --target-app-partition ota_1 target/xtensa-esp32s3-espidf/release/vibekeys ./vibekeys.bin
         espflash save-image --chip esp32s3 --flash-size 16mb --partition-table partitions.csv --target-app-partition ota_0 target/xtensa-esp32s3-espidf/release/ota ./ota.bin
-        dd if=ota.bin of=vibekeys_ota.bin bs=1 seek=$((0x210000)) conv=notrunc
+        dd if=ota.bin of=vibekeys.bin bs=1 seek=$((0x210000)) conv=notrunc
         ;;
     *)
         echo "Usage: $0 {ota|keys|keys_bin|keys_ota_bin}"
